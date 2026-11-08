@@ -20,7 +20,8 @@ import {
     getCountFromServer,
     deleteField,
     Timestamp,
-    increment
+    increment,
+    arrayUnion
 } from 'firebase/firestore';
 import log from "@/src/utils/logger";
 import { db, auth, ensureAuthenticated, functions } from '../firebase/config';
@@ -29,7 +30,7 @@ import {
     EmployeeAssignment, SubmissionStatus, FormSection, Site, Role,
     WorkflowConfig, Permission, SubmittedFormData, DashboardAnalytics,
     LeavePolicy, DraftSubmission, TimelineEvent, FieldType, CorrectionRequest,
-    ReferralInvite, DuplicateCheckResult, DuplicateMatchItem
+    ReferralInvite, DuplicateCheckResult, DuplicateMatchItem, PromotionRecord
 } from '../../types';
 import { getApplicantName, getApplicantEmail, getApplicantPhone, getApplicantAadhaar, getApplicantPAN, getApplicantUAN } from '../../utils/formDataHelper';
 import { checkEmailUniquenessGlobal } from './authService';
@@ -2952,6 +2953,86 @@ export const assignToSite = async (
     await logSystemAction('CREATE', 'EMPLOYEES', `Assigned employee ${empData.applicantName || (empData as any).employeeName || employeeId} (${employeeId}) to site ${updates.siteName || assignment.siteId} as ${assignment.type}`);
 };
 
+export interface PromoteEmployeeParams {
+    employeeId: string;
+    newDesignation: string;
+    effectiveDate: string;
+    newSiteId?: string;
+    newSiteName?: string;
+    referenceNo?: string;
+    remarks?: string;
+    promotedBy?: string;
+}
+
+export const promoteEmployee = async (params: PromoteEmployeeParams): Promise<PromotionRecord> => {
+    const { employeeId, newDesignation, effectiveDate, newSiteId, newSiteName, referenceNo, remarks, promotedBy } = params;
+    const resolved = await resolveEmployeeDoc(employeeId);
+    if (!resolved) throw new Error("Employee not found");
+    const { ref: empRef, data: empData } = resolved;
+
+    const currentDesignation = empData.designation 
+        || empData.profileData?.designation 
+        || (empData.data as any)?.designation 
+        || 'Staff';
+    const applicantName = empData.applicantName 
+        || (empData as any).employeeName 
+        || (empData.profileData as any)?.applicantName 
+        || 'Employee';
+
+    const cleanRefNo = (referenceNo && referenceNo.trim()) 
+        ? referenceNo.trim() 
+        : `UDF/PRM/${new Date().getFullYear()}/${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+
+    const promotionRecord: PromotionRecord = {
+        id: uuidv4(),
+        fromDesignation: currentDesignation,
+        toDesignation: newDesignation,
+        effectiveDate: effectiveDate || new Date().toISOString().split('T')[0],
+        siteId: newSiteId || empData.currentSiteId || undefined,
+        siteName: newSiteName || empData.siteName || undefined,
+        referenceNo: cleanRefNo,
+        remarks: remarks || '',
+        promotedAt: new Date().toISOString(),
+        promotedBy: promotedBy || 'Admin'
+    };
+
+    // Update active primary assignment designation as well if it exists
+    let updatedActiveAssignments = empData.activeAssignments ? [...empData.activeAssignments] : [];
+    if (updatedActiveAssignments.length > 0) {
+        updatedActiveAssignments = updatedActiveAssignments.map(a => {
+            if (a.type === 'PRIMARY') {
+                return {
+                    ...a,
+                    designation: newDesignation,
+                    ...(newSiteId ? { siteId: newSiteId } : {})
+                };
+            }
+            return a;
+        });
+    }
+
+    const updates: any = {
+        designation: newDesignation,
+        'profileData.designation': newDesignation,
+        promotionHistory: arrayUnion(promotionRecord),
+        lastPromotionDate: effectiveDate || new Date().toISOString().split('T')[0]
+    };
+
+    if (newSiteId) {
+        updates.currentSiteId = newSiteId;
+        if (newSiteName) updates.siteName = newSiteName;
+    }
+    if (updatedActiveAssignments.length > 0) {
+        updates.activeAssignments = updatedActiveAssignments;
+    }
+
+    await updateDoc(empRef, updates);
+
+    await logSystemAction('UPDATE', 'EMPLOYEES', `Promoted employee ${applicantName} (${employeeId}) from ${currentDesignation} to ${newDesignation}`);
+
+    return promotionRecord;
+};
+
 export const relieveFromSite = async (
     employeeId: string,
     assignmentId: string,
@@ -4377,6 +4458,23 @@ export const getEmployeeTimeline = async (employeeId: string): Promise<TimelineE
                     employeeId: stint.employeeId || primaryEmpId
                 });
             }
+        });
+    }
+
+    // 5.5. Add Promotion History Events
+    if (Array.isArray(empData?.promotionHistory)) {
+        empData.promotionHistory.forEach((prm: any, idx: number) => {
+            if (!prm) return;
+            events.push({
+                id: prm.id || `promo-${idx}-${primaryEmpId}`,
+                type: 'PROMOTION',
+                date: safeIsoDate(prm.effectiveDate || prm.promotedAt),
+                title: `Promoted to ${prm.toDesignation}`,
+                description: `Elevated from ${prm.fromDesignation || 'Previous Role'} to ${prm.toDesignation}${prm.siteName ? ` at ${prm.siteName}` : ''}.${prm.referenceNo ? ` Ref: ${prm.referenceNo}.` : ''}${prm.remarks ? ` Remarks: ${prm.remarks}` : ''}`,
+                status: 'Approved',
+                employeeId: primaryEmpId,
+                metadata: prm
+            });
         });
     }
 

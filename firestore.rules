@@ -509,7 +509,12 @@ service cloud.firestore {
         )
       );
       allow delete: if isSuperAdmin();
-      allow list: if isSuperAdmin() || (isAuthenticated() && resource.data.createdBy == request.auth.uid);
+      allow list: if isSuperAdmin() ||
+                     hasPermission('INVITES_VIEW_ALL') ||
+                     hasPermission('INVITES_MANAGE') ||
+                     hasPermission('SITES_DELETE') ||
+                     hasPermission('MANAGE_SITES') ||
+                     (isAuthenticated() && resource.data.createdBy == request.auth.uid);
     }
 
     // ─── Engagement, Attendance, and Complaints ──────────────────────────────
@@ -526,7 +531,8 @@ service cloud.firestore {
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['referralCount']) && (
           !request.resource.data.diff(resource.data).affectedKeys().hasAny(['points']) ||
           (request.resource.data.get('points', 0) >= 0 && request.resource.data.get('points', 0) <= resource.data.get('points', 0)) ||
-          (request.resource.data.get('lastVisitDate', '') != resource.data.get('lastVisitDate', '') &&
+          (request.resource.data.get('lastVisitDate', '') is string &&
+           request.resource.data.get('lastVisitDate', '') > resource.data.get('lastVisitDate', '') &&
            request.resource.data.get('points', 0) >= 0 &&
            request.resource.data.get('points', 0) <= resource.data.get('points', 0) + 5)
         )

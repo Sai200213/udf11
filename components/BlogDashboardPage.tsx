@@ -166,6 +166,7 @@ const BlogDashboardPage: React.FC = () => {
                 const res = await completeQuizFn({
                     questionId: (quizQuestion as any).id || undefined,
                     selectedAnswer: quizAnswer,
+                    targetUserId: userId,
                     quizDate: new Date().toISOString().split('T')[0]
                 });
                 if (res.data?.isCorrect) {
@@ -177,18 +178,6 @@ const BlogDashboardPage: React.FC = () => {
                 console.warn("[completeTrainingQuizServer] Notice:", err);
                 if (err.code === 'functions/already-exists') {
                     setQuizAwarded(true);
-                } else {
-                    const addedPoints = gamificationRules.quizPoints;
-                    const newPoints = points + addedPoints;
-                    setPoints(newPoints);
-                    setQuizAwarded(true);
-                    try {
-                        const docRef = doc(db, 'user_engagement', userId);
-                        await setDoc(docRef, {
-                            ...streak,
-                            points: newPoints
-                        }, { merge: true });
-                    } catch {}
                 }
             }
         }

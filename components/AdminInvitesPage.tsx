@@ -291,7 +291,7 @@ export const AdminInvitesPage: React.FC<AdminInvitesPageProps> = ({
     let qRef = query(collection(db, 'referral_invites'));
     
     // Non-superadmins only see their own referral links
-    if (!isSuperAdmin) {
+    if (!isSuperAdmin && !hasPermission(Permission.INVITES_VIEW_ALL) && !hasPermission(Permission.INVITES_MANAGE)) {
       const creatorUid = auth.currentUser?.uid || authUser.id;
       qRef = query(collection(db, 'referral_invites'), where('createdBy', '==', creatorUid));
     }

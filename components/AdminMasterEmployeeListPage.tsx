@@ -5,8 +5,8 @@ import { FirestoreEmployee, EmployeeAssignment, Site, SubUnit, Role, FormSection
 import Button from './common/Button';
 import Input from './common/Input';
 import Select from './common/Select';
-import { Search, Building, User, Phone, Tag, Filter, Database, ShieldAlert, Info, Edit3, Trash2, RotateCcw, Settings, X, CheckCircle, AlertTriangle, RefreshCw, ChevronDown, UserMinus, UserPlus, Calendar, PlusCircle, Briefcase, Plus, ShieldCheck, MapPin, LogOut, Upload, FileClock, Clock, Lock, Mail, Globe, Key, Shield, FileText, ArrowUpDown, ArrowDown, ArrowUp, Layout, Columns, Save, ShieldHalf } from 'lucide-react';
-import { getPaginatedSubmissions, getPaginatedEmployees, assignToSite, relieveFromSite, adminUpdateEmployeeEmail, adminSetAuthProvider, adminUnlinkGoogleAccount, adminResetEmployeePassword, adminResetToDefaultPassword, updateEmployeeClientIds, getEmployeeStatsCounts } from '../src/services/employeeService';
+import { Search, Building, User, Phone, Tag, Filter, Database, ShieldAlert, Info, Edit3, Trash2, RotateCcw, Settings, X, CheckCircle, AlertTriangle, RefreshCw, ChevronDown, UserMinus, UserPlus, Calendar, PlusCircle, Briefcase, Plus, ShieldCheck, MapPin, LogOut, Upload, FileClock, Clock, Lock, Mail, Globe, Key, Shield, FileText, ArrowUpDown, ArrowDown, ArrowUp, Layout, Columns, Save, ShieldHalf, Award, TrendingUp, Printer } from 'lucide-react';
+import { getPaginatedSubmissions, getPaginatedEmployees, assignToSite, relieveFromSite, promoteEmployee, adminUpdateEmployeeEmail, adminSetAuthProvider, adminUnlinkGoogleAccount, adminResetEmployeePassword, adminResetToDefaultPassword, updateEmployeeClientIds, getEmployeeStatsCounts } from '../src/services/employeeService';
 import { QueryDocumentSnapshot } from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
 import BulkImportModal from './BulkImportModal';
@@ -170,6 +170,389 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
   const [newAssignmentDate, setNewAssignmentDate] = useState(new Date().toISOString().split('T')[0]);
   const [isAssigning, setIsAssigning] = useState(false);
 
+  // Promotion Modal State
+  const [isPromoteModalOpen, setIsPromoteModalOpen] = useState(false);
+  const [promoteTarget, setPromoteTarget] = useState<SubmittedFormData | null>(null);
+  const [promoteNewDesignation, setPromoteNewDesignation] = useState('');
+  const [promoteCustomDesignation, setPromoteCustomDesignation] = useState('');
+  const [promoteEffectiveDate, setPromoteEffectiveDate] = useState(new Date().toISOString().split('T')[0]);
+  const [promoteSiteId, setPromoteSiteId] = useState('');
+  const [promoteRefNo, setPromoteRefNo] = useState('');
+  const [promoteRemarks, setPromoteRemarks] = useState('');
+  const [isPromoting, setIsPromoting] = useState(false);
+
+  const availableDesignations = useMemo(() => {
+    const set = new Set<string>();
+    if (portalConfig?.designations && Array.isArray(portalConfig.designations)) {
+      portalConfig.designations.forEach(d => { if (d) set.add(d); });
+    }
+    const targetSiteId = promoteSiteId || (promoteTarget as any)?.currentSiteId || (promoteTarget as any)?.siteId;
+    const siteObj = safeSites.find(s => s.id === targetSiteId);
+    if (siteObj?.allowedDesignations && Array.isArray(siteObj.allowedDesignations)) {
+      siteObj.allowedDesignations.forEach(d => { if (d) set.add(d); });
+    }
+    const defaults = [
+      'Security Guard',
+      'Head Guard',
+      'Lady Security Guard',
+      'Gunman',
+      'Security Supervisor',
+      'Field Officer',
+      'Assistant Security Officer',
+      'Security Officer',
+      'Site Incharge',
+      'Operations Manager'
+    ];
+    defaults.forEach(d => set.add(d));
+    return Array.from(set);
+  }, [portalConfig, promoteSiteId, promoteTarget, safeSites]);
+
+  const openPromoteModal = useCallback((emp: SubmittedFormData) => {
+    setPromoteTarget(emp);
+    setPromoteNewDesignation('');
+    setPromoteCustomDesignation('');
+    setPromoteEffectiveDate(new Date().toISOString().split('T')[0]);
+    setPromoteSiteId((emp as any).currentSiteId || (emp as any).siteId || '');
+    setPromoteRefNo(`UDF/PRM/${new Date().getFullYear()}/${Math.random().toString(36).substring(2, 7).toUpperCase()}`);
+    setPromoteRemarks('');
+    setIsPromoteModalOpen(true);
+  }, []);
+
+  const handleConfirmPromotion = async () => {
+    if (!promoteTarget) return;
+    const finalDesignation = (promoteNewDesignation === '__CUSTOM__' ? promoteCustomDesignation : promoteNewDesignation).trim();
+    if (!finalDesignation) {
+      alert("Please select or enter the new designation.");
+      return;
+    }
+    const currentDesig = (promoteTarget as any).designation || (promoteTarget as any).profileData?.designation || (promoteTarget.data as any)?.designation || 'Staff';
+    if (finalDesignation === currentDesig) {
+      alert(`The employee is already assigned the designation "${currentDesig}". Please choose a different designation.`);
+      return;
+    }
+    const targetSiteObj = safeSites.find(s => s.id === promoteSiteId);
+    const resolvedSiteName = targetSiteObj ? targetSiteObj.name : undefined;
+
+    setIsPromoting(true);
+    try {
+      const record = await promoteEmployee({
+        employeeId: promoteTarget.employeeId || promoteTarget.id,
+        newDesignation: finalDesignation,
+        effectiveDate: promoteEffectiveDate,
+        newSiteId: promoteSiteId || undefined,
+        newSiteName: resolvedSiteName,
+        referenceNo: promoteRefNo,
+        remarks: promoteRemarks,
+        promotedBy: authUser?.name || authUser?.id || 'Admin'
+      });
+
+      // Update local paginated list
+      setPaginatedData(prev => prev.map(item => {
+        if (item.id === promoteTarget.id || item.employeeId === promoteTarget.employeeId) {
+          const updatedHistory = [...((item as any).promotionHistory || []), record];
+          return {
+            ...item,
+            designation: finalDesignation,
+            profileData: {
+              ...(item.profileData || {}),
+              designation: finalDesignation
+            },
+            currentSiteId: promoteSiteId || (item as any).currentSiteId,
+            siteName: resolvedSiteName || item.siteName,
+            promotionHistory: updatedHistory,
+            lastPromotionDate: promoteEffectiveDate
+          } as any;
+        }
+        return item;
+      }));
+
+      // Update management target if open
+      if (managementTarget && (managementTarget.id === promoteTarget.id || managementTarget.employeeId === promoteTarget.employeeId)) {
+        setManagementTarget(prev => prev ? {
+          ...prev,
+          designation: finalDesignation,
+          profileData: {
+            ...(prev.profileData || {}),
+            designation: finalDesignation
+          },
+          currentSiteId: promoteSiteId || (prev as any).currentSiteId,
+          siteName: resolvedSiteName || prev.siteName,
+          promotionHistory: [...((prev as any).promotionHistory || []), record],
+          lastPromotionDate: promoteEffectiveDate
+        } as any : null);
+      }
+
+      alert(`Successfully promoted ${promoteTarget.applicantName || promoteTarget.employeeId} to "${finalDesignation}"!`);
+      setIsPromoteModalOpen(false);
+    } catch (err: any) {
+      console.error("[handleConfirmPromotion] Error:", err);
+      alert(`Promotion Failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsPromoting(false);
+    }
+  };
+
+  const handlePrintPromotionLetter = () => {
+    if (!promoteTarget) return;
+    const finalDesignation = (promoteNewDesignation === '__CUSTOM__' ? promoteCustomDesignation : promoteNewDesignation).trim() || 'New Designation';
+    const currentDesig = (promoteTarget as any).designation || (promoteTarget as any).profileData?.designation || (promoteTarget.data as any)?.designation || 'Staff';
+    const empName = promoteTarget.applicantName || 'Employee';
+    const empId = promoteTarget.employeeId || promoteTarget.id;
+    const targetSiteObj = safeSites.find(s => s.id === promoteSiteId);
+    const resolvedSiteName = targetSiteObj ? targetSiteObj.name : (promoteTarget.siteName || 'Designated Deployment Site');
+    const refNumber = promoteRefNo || `UDF/PRM/${new Date().getFullYear()}/001`;
+    const formattedDate = new Date(promoteEffectiveDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+
+    const esc = (val: unknown): string =>
+      String(val ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const printWin = window.open('', '_blank', 'width=850,height=1100');
+    if (!printWin) {
+      alert("Please allow popups to generate the promotion letter.");
+      return;
+    }
+
+    printWin.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Promotion Letter - ${esc(empName)} (${esc(empId)})</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Cinzel:wght@700&display=swap" rel="stylesheet">
+        <style>
+          @page { size: A4; margin: 20mm; }
+          body {
+            font-family: 'Inter', sans-serif;
+            color: #1e293b;
+            line-height: 1.6;
+            margin: 0;
+            padding: 24px;
+            background: #fff;
+          }
+          .letter-container {
+            max-width: 720px;
+            margin: 0 auto;
+            border: 1px solid #e2e8f0;
+            padding: 40px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+          }
+          @media print {
+            body { padding: 0; }
+            .letter-container { border: none; padding: 0; box-shadow: none; }
+            .no-print { display: none; }
+          }
+          .header {
+            text-align: center;
+            border-bottom: 2px solid #0f172a;
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+          }
+          .company-name {
+            font-family: 'Cinzel', serif;
+            font-size: 20px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: 1px;
+            margin: 0;
+          }
+          .company-tagline {
+            font-size: 10px;
+            font-weight: 600;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-top: 4px;
+          }
+          .company-sub {
+            font-size: 11px;
+            color: #475569;
+            margin-top: 4px;
+          }
+          .meta-bar {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            color: #334155;
+          }
+          .recipient-block {
+            margin-bottom: 24px;
+            font-size: 13px;
+          }
+          .subject {
+            text-align: center;
+            font-size: 14px;
+            font-weight: 800;
+            text-transform: uppercase;
+            text-decoration: underline;
+            margin: 24px 0;
+            color: #0f172a;
+            letter-spacing: 0.5px;
+          }
+          .body-text {
+            font-size: 13px;
+            text-align: justify;
+            margin-bottom: 16px;
+            color: #334155;
+          }
+          .details-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 12px;
+          }
+          .details-table th, .details-table td {
+            border: 1px solid #cbd5e1;
+            padding: 8px 12px;
+            text-align: left;
+          }
+          .details-table th {
+            background-color: #f8fafc;
+            font-weight: 700;
+            width: 35%;
+            color: #1e293b;
+          }
+          .details-table td {
+            font-weight: 600;
+            color: #0f172a;
+          }
+          .sign-block {
+            margin-top: 48px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+          }
+          .sign-unit {
+            text-align: left;
+            font-size: 12px;
+          }
+          .sign-line {
+            width: 180px;
+            border-top: 1px solid #94a3b8;
+            margin-top: 48px;
+            padding-top: 6px;
+          }
+          .print-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+          }
+        </style>
+      </head>
+      <body>
+        <button class="print-btn no-print" onclick="window.print()">🖨️ Print / Save PDF</button>
+        <div class="letter-container">
+          <div class="header">
+            <h1 class="company-name">UNIQUE DELTA FORCE SECURITY SERVICES PVT LTD</h1>
+            <p class="company-tagline">Excellence in Security, Vigilance & Facility Operations</p>
+            <p class="company-sub">Regd. Off: Hitech City, Hyderabad, Telangana — 500081 | Email: hr@udfonline.in | Web: www.udfonline.in</p>
+          </div>
+
+          <div class="meta-bar">
+            <span><strong>Ref:</strong> ${esc(refNumber)}</span>
+            <span><strong>Date:</strong> ${esc(formattedDate)}</span>
+          </div>
+
+          <div class="recipient-block">
+            <strong>To,</strong><br>
+            <strong>${esc(empName)}</strong><br>
+            Employee ID: <strong>${esc(empId)}</strong><br>
+            Current Designation: ${esc(currentDesig)}<br>
+            Deployment Location: ${esc(resolvedSiteName)}
+          </div>
+
+          <div class="subject">
+            SUBJECT: PROMOTION ORDER — ELEVATION TO ${esc(finalDesignation.toUpperCase())}
+          </div>
+
+          <p class="body-text">
+            Dear <strong>${esc(empName)}</strong>,
+          </p>
+
+          <p class="body-text">
+            We are pleased to inform you that in recognition of your consistent diligence, exemplary discipline, and valuable contribution to Unique Delta Force Security Services Pvt. Ltd., the Management is delighted to promote you to the cadre of <strong>${esc(finalDesignation)}</strong> with effect from <strong>${esc(formattedDate)}</strong>.
+          </p>
+
+          <p class="body-text">
+            In your elevated capacity, you will assume expanded operational leadership, supervision, and security responsibilities. The summary of your revised deployment details is outlined below:
+          </p>
+
+          <table class="details-table">
+            <tr>
+              <th>Employee Name</th>
+              <td>${esc(empName)}</td>
+            </tr>
+            <tr>
+              <th>Employee ID</th>
+              <td>${esc(empId)}</td>
+            </tr>
+            <tr>
+              <th>Previous Cadre / Designation</th>
+              <td>${esc(currentDesig)}</td>
+            </tr>
+            <tr>
+              <th>Elevated Cadre / Designation</th>
+              <td style="color: #2563eb; font-weight: 800;">${esc(finalDesignation)}</td>
+            </tr>
+            <tr>
+              <th>Effective Date</th>
+              <td>${esc(formattedDate)}</td>
+            </tr>
+            <tr>
+              <th>Posting / Operational Site</th>
+              <td>${esc(resolvedSiteName)}</td>
+            </tr>
+            ${promoteRemarks ? `
+            <tr>
+              <th>Management Citation</th>
+              <td>${esc(promoteRemarks)}</td>
+            </tr>` : ''}
+          </table>
+
+          <p class="body-text">
+            All other terms and conditions governing your employment with the organization shall continue to remain in full force and effect. We take this opportunity to congratulate you on your well-deserved promotion and trust that you will continue to discharge your duties with the highest standards of integrity, alertness, and professional excellence.
+          </p>
+
+          <p class="body-text" style="margin-top: 24px;">
+            We wish you sustained success in your new position.
+          </p>
+
+          <div class="sign-block">
+            <div class="sign-unit">
+              <div class="sign-line">
+                <strong>Employee Signature</strong><br>
+                <span>(Acknowledgement of Acceptance)</span>
+              </div>
+            </div>
+            <div class="sign-unit" style="text-align: right;">
+              <div class="sign-line" style="margin-left: auto;">
+                <strong>For Unique Delta Force Security Services Pvt. Ltd.</strong><br>
+                <span style="color: #64748b;">Authorized Signatory / HR Operations</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `);
+    printWin.document.close();
+  };
+
   const hasPermission = useCallback((permission: Permission) => {
     if (isSuperAdmin) return true;
     if (authUser?.permissionOverrides?.[permission] === true) return true;
@@ -178,6 +561,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
   }, [isSuperAdmin, authUser, userRole]);
 
   const hasViewScopeAll = effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_VIEW_SCOPE_ALL);
+  const canPromote = isSuperAdmin || effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_ACTION_PROMOTE) || hasPermission(Permission.EMPLOYEES_EDIT_PROFILE) || hasPermission(Permission.EMPLOYEES_MANAGE_DEPLOYMENTS);
 
   // Auth Management State
   const [isAuthUpdating, setIsAuthUpdating] = useState(false);
@@ -1182,6 +1566,33 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                       )}
                     </div>
 
+                    {/* Promotion History Section */}
+                    {(managementTarget as any).promotionHistory?.length > 0 && (
+                      <div className="pt-2 border-t border-gray-50">
+                        <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest flex items-center mb-2">
+                          <Award size={12} className="mr-1" /> Promotion & Cadre Elevation History
+                        </label>
+                        <div className="space-y-2 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                          {(managementTarget as any).promotionHistory.slice().reverse().map((prm: any, idx: number) => (
+                            <div key={prm.id || idx} className="p-2 bg-blue-50/70 rounded-lg border border-blue-100 flex justify-between items-center text-[10px]">
+                              <div>
+                                <p className="font-bold text-slate-800">
+                                  <span className="text-slate-500 line-through mr-1">{prm.fromDesignation}</span>
+                                  <span className="text-blue-700 font-black">→ {prm.toDesignation}</span>
+                                </p>
+                                <p className="text-[9px] text-slate-500 mt-0.5">
+                                  Effective: {new Date(prm.effectiveDate).toLocaleDateString()} {prm.siteName ? `• ${prm.siteName}` : ''}
+                                </p>
+                              </div>
+                              <span className="text-[9px] font-mono bg-white px-1.5 py-0.5 rounded border border-blue-200 text-blue-700 font-bold">
+                                {prm.referenceNo || 'PROMO'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {hasPermission(Permission.EMPLOYEES_CORRECT_ID) && viewMode === 'ACTIVE' && (
                       <div className="pt-2 border-t border-gray-50">
                         <label className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-2 block">Correct Employee Number</label>
@@ -1488,13 +1899,24 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                                   )}
                                 </>
                               ) : (
-                                (isSuperAdmin || userRole?.permissions.includes(Permission.EMPLOYEES_ACTION_RELIEVE)) && (
-                                  <Button variant="secondary" className="w-full bg-purple-600 text-white font-bold" onClick={() => {
-                                    setRelieveDate(new Date().toISOString().split('T')[0]);
-                                    setRelieveReason('Resignation');
-                                    setIsRelieveModalOpen(true);
-                                  }}><UserMinus size={16} className="mr-2" /> Relieve Employee</Button>
-                                )
+                                <div className="flex flex-col gap-2 w-full">
+                                  {canPromote && (
+                                    <Button
+                                      variant="primary"
+                                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold flex items-center justify-center text-xs py-2.5 shadow-xs"
+                                      onClick={() => openPromoteModal(managementTarget)}
+                                    >
+                                      <Award size={16} className="mr-2" /> Promote Employee
+                                    </Button>
+                                  )}
+                                  {(isSuperAdmin || userRole?.permissions.includes(Permission.EMPLOYEES_ACTION_RELIEVE)) && (
+                                    <Button variant="secondary" className="w-full bg-purple-600 text-white font-bold" onClick={() => {
+                                      setRelieveDate(new Date().toISOString().split('T')[0]);
+                                      setRelieveReason('Resignation');
+                                      setIsRelieveModalOpen(true);
+                                    }}><UserMinus size={16} className="mr-2" /> Relieve Employee</Button>
+                                  )}
+                                </div>
                               )}
                             </div>
                           )}
@@ -2299,6 +2721,162 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
           createdBy={authUser?.displayName || authUser?.email || 'Admin'}
           initialSelectedFields={(managementTarget as any).pendingProfileFields || []}
         />
+      )}
+
+      {/* Promote Employee Modal */}
+      {isPromoteModalOpen && promoteTarget && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-gray-100 overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-blue-600 to-indigo-700 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-white/10 rounded-xl backdrop-blur-xs">
+                  <Award size={22} className="text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black tracking-tight">Promote Employee</h3>
+                  <p className="text-xs text-blue-100 font-medium">
+                    {promoteTarget.applicantName} • <span className="font-mono">{promoteTarget.employeeId || 'No ID'}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsPromoteModalOpen(false)}
+                className="p-1.5 hover:bg-white/10 rounded-lg text-white/80 hover:text-white transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
+              {/* Current State Card */}
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Current Cadre</span>
+                  <span className="font-black text-slate-800">
+                    {(promoteTarget as any).designation || (promoteTarget as any).profileData?.designation || (promoteTarget.data as any)?.designation || 'Security Guard'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Current Site</span>
+                  <span className="font-black text-slate-800 truncate block">
+                    {promoteTarget.siteName || (safeSites.find(s => s.id === (promoteTarget as any).currentSiteId)?.name) || 'Unassigned'}
+                  </span>
+                </div>
+              </div>
+
+              {/* New Designation */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Elevate To Designation *</label>
+                <Select
+                  value={promoteNewDesignation}
+                  onChange={(e) => setPromoteNewDesignation(e.target.value)}
+                  className="w-full"
+                >
+                  <option value="">Select New Designation...</option>
+                  {availableDesignations.map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                  <option value="__CUSTOM__">+ Enter Custom Designation...</option>
+                </Select>
+              </div>
+
+              {promoteNewDesignation === '__CUSTOM__' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Custom Designation Title *</label>
+                  <Input
+                    value={promoteCustomDesignation}
+                    onChange={(e) => setPromoteCustomDesignation(e.target.value)}
+                    placeholder="e.g. Chief Security Officer / Assistant Manager"
+                    className="w-full"
+                  />
+                </div>
+              )}
+
+              {/* Effective Date & Posting Site */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Effective Date *</label>
+                  <Input
+                    type="date"
+                    value={promoteEffectiveDate}
+                    onChange={(e) => setPromoteEffectiveDate(e.target.value)}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Operational Site</label>
+                  <Select
+                    value={promoteSiteId}
+                    onChange={(e) => setPromoteSiteId(e.target.value)}
+                    className="w-full"
+                  >
+                    <option value="">Keep Current Site</option>
+                    {safeSites.filter(s => s && s.status === 'Active').map(s => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+
+              {/* Order Ref No */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Order / Ref Number</label>
+                <Input
+                  value={promoteRefNo}
+                  onChange={(e) => setPromoteRefNo(e.target.value)}
+                  placeholder="e.g. UDF/PRM/2026/001"
+                  className="w-full font-mono text-xs"
+                />
+              </div>
+
+              {/* Remarks */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Management Remarks / Citation (Optional)</label>
+                <textarea
+                  value={promoteRemarks}
+                  onChange={(e) => setPromoteRemarks(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. Promoted in recognition of leadership during corporate audit..."
+                  className="w-full p-2.5 text-xs border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-hidden resize-none"
+                />
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="text-slate-600 hover:text-slate-800"
+                onClick={handlePrintPromotionLetter}
+                disabled={(!promoteNewDesignation && !promoteCustomDesignation) || isPromoting}
+              >
+                <Printer size={14} className="mr-1.5" /> Promotion Letter
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setIsPromoteModalOpen(false)}
+                  disabled={isPromoting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="bg-blue-600 hover:bg-blue-700 font-bold"
+                  onClick={handleConfirmPromotion}
+                  disabled={(!promoteNewDesignation && !promoteCustomDesignation) || isPromoting}
+                >
+                  {isPromoting ? 'Promoting...' : 'Confirm & Apply'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

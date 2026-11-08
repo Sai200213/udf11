@@ -2056,7 +2056,6 @@ exports.getBatchSignedViewUrls = secureOnCall(async (request) => {
                 authCache.set(cacheKey, allowed);
                 return allowed;
             }
-            const targetId = parts[1];
 
             if (!root || !targetId) return false;
             const cacheKey = `${root}:${targetId}`;
@@ -3815,7 +3814,7 @@ exports.setAdminClaims = secureOnCall(async (request) => {
 
     try {
         const resolvedDocId = staffDocSnap.exists ? uid : (staffEmailSnap && !staffEmailSnap.empty ? staffEmailSnap.docs[0].id : uid);
-        const res = await computeAndApplyUserClaims(uid, resolvedDocId, profile);
+        const res = await computeAndApplyUserClaims(uid, resolvedDocId, null);
         if (!res.isAdmin) {
             throw new functions.https.HttpsError('permission-denied', 'Unauthorized to receive admin claims.');
         }
@@ -4595,6 +4594,9 @@ exports.processRequestReviewServer = secureOnCall(async (request) => {
     const db = admin.firestore();
     const uid = request.auth.uid;
     const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
     const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'super-admin';
 
     // 1. Resolve caller details, permissions, and sites
@@ -5014,6 +5016,9 @@ exports.approveOnboardingServer = secureOnCall(async (request) => {
     const db = admin.firestore();
     const uid = request.auth.uid;
     const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
     const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'super-admin';
     const permissions = Array.isArray(token.permissions) ? token.permissions : [];
 
@@ -5343,6 +5348,9 @@ exports.relieveEmployeeServer = secureOnCall(async (request) => {
     const db = admin.firestore();
     const uid = request.auth.uid;
     const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
     const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'super-admin';
     const permissions = Array.isArray(token.permissions) ? token.permissions : [];
 
@@ -5478,6 +5486,9 @@ exports.rejoinEmployeeServer = secureOnCall(async (request) => {
     const db = admin.firestore();
     const uid = request.auth.uid;
     const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
     const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'super-admin';
     const permissions = Array.isArray(token.permissions) ? token.permissions : [];
 
@@ -5494,6 +5505,16 @@ exports.rejoinEmployeeServer = secureOnCall(async (request) => {
     const origData = origEmpSnap.data();
 
     const resolvedSiteId = siteId || origData.currentSiteId || 'Unassigned';
+    if (!isSuperAdmin && resolvedSiteId && resolvedSiteId !== 'Unassigned') {
+        const hasGlobalScope = permissions.includes('EMPLOYEES_VIEW_SCOPE_ALL') ||
+            permissions.includes('SUBMISSIONS_VIEW_SCOPE_ALL') ||
+            permissions.includes('MANAGE_SITES') ||
+            permissions.includes('MANAGE_ALL_SITES');
+        const sitesManaged = Array.isArray(token.sitesManaged) ? token.sitesManaged : [];
+        if (!hasGlobalScope && !sitesManaged.includes(resolvedSiteId)) {
+            throw new functions.https.HttpsError('permission-denied', `You do not have management authority for site "${resolvedSiteId}".`);
+        }
+    }
     const resolvedSiteName = siteName || origData.siteName || 'N/A';
     const resolvedDesignation = designation || origData.designation || 'Staff';
     const applicantName = origData.applicantName || 'Unknown';
@@ -5832,7 +5853,18 @@ exports.completeTrainingQuizServer = secureOnCall(async (request) => {
     }
 
     // 4. Atomically update user_engagement points and write to gamification_logs
-    const targetDocId = (request.data && typeof request.data.targetUserId === 'string' && request.data.targetUserId) ? request.data.targetUserId : uid;
+    let targetDocId = uid;
+    const requestedId = (request.data && typeof request.data.targetUserId === 'string') ? request.data.targetUserId.trim() : '';
+    if (requestedId && requestedId !== uid && !requestedId.includes('/')) {
+        if (request.auth.token && request.auth.token.employeeId === requestedId) {
+            targetDocId = requestedId;
+        } else {
+            const empCheck = await db.collection('employees').doc(requestedId).get();
+            if (empCheck.exists && (empCheck.data().uid === uid || empCheck.data().linkedUid === uid)) {
+                targetDocId = requestedId;
+            }
+        }
+    }
     const engagementRef = db.collection('user_engagement').doc(targetDocId);
     const logRef = db.collection('gamification_logs').doc();
 
@@ -6386,6 +6418,9 @@ exports.syncEmployeeToGoogleDriveServer = secureOnCall({ timeoutSeconds: 300, me
 
     // SEC-13: Only SuperAdmin can trigger heavy Google Drive sync
     const callerClaims = request.auth.token || {};
+    if (callerClaims.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
     let isSuperAdmin = callerClaims.isSuperAdmin === true || callerClaims.roleId === 'role-super-admin';
     if (!isSuperAdmin) {
         const db = admin.firestore();
@@ -6424,6 +6459,9 @@ exports.syncSubmissionToSheetsServer = secureOnCall({ timeoutSeconds: 120 }, asy
 
     // SEC-13: Only SuperAdmin can trigger Google Sheets sync
     const callerClaims = request.auth.token || {};
+    if (callerClaims.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
     let isSuperAdmin = callerClaims.isSuperAdmin === true || callerClaims.roleId === 'role-super-admin';
     if (!isSuperAdmin) {
         const db = admin.firestore();

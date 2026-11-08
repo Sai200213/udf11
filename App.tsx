@@ -1875,18 +1875,8 @@ const App: React.FC = () => {
         'RESIGNATIONS': 'resignations'
       } as const;
 
-      // Item 5: If reverting an already approved leave request, refund the deducted days
-      if (moduleId === 'LEAVES') {
-        const req = leaveRequests.find(r => r.id === requestId);
-        if (req && req.status === RequestStatus.APPROVED) {
-          const [sY, sM, sD] = req.startDate.split('-').map(Number);
-          const [eY, eM, eD] = req.endDate.split('-').map(Number);
-          const daysTaken = Math.round((Date.UTC(eY, eM - 1, eD) - Date.UTC(sY, sM - 1, sD)) / (1000 * 3600 * 24)) + 1;
-          const { updateEmployeeLeaveBalance } = await import('./src/services/employeeService');
-          await updateEmployeeLeaveBalance(req.employeeId, req.leaveType, -daysTaken);
-        }
-      }
-
+      // processRequestReviewServer (called inside revertWorkflowRequest) atomically
+      // refunds leave balances and records the audit log entry when reverting an Approved leave.
       await revertWorkflowRequest(collMap[moduleId], requestId, level);
       logSystemAction('UPDATE', moduleId as any, `Reverted request ${requestId} to Level ${level}`);
       sendNotification(authUser?.id || 'admin', `${moduleId.replace('_', ' ')} request reverted to Level ${level}.`, 'success');

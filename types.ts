@@ -132,6 +132,7 @@ export enum Permission {
   EMPLOYEES_EDIT_PROFILE = 'EMPLOYEES_EDIT_PROFILE',
   EMPLOYEES_ACTION_RELIEVE = 'EMPLOYEES_ACTION_RELIEVE',
   EMPLOYEES_ACTION_REJOIN = 'EMPLOYEES_ACTION_REJOIN',
+  EMPLOYEES_ACTION_PROMOTE = 'EMPLOYEES_ACTION_PROMOTE',
   EMPLOYEES_ACTION_RESTORE = 'EMPLOYEES_ACTION_RESTORE',
   EMPLOYEES_VIEW_TIMELINE = 'EMPLOYEES_VIEW_TIMELINE',
   EXPORT_DATA = 'EXPORT_DATA',
@@ -608,6 +609,21 @@ export interface OnboardingSubmission {
   phoneNumber?: string;
   siteId?: string;
   siteName?: string;
+  promotionHistory?: PromotionRecord[];
+  lastPromotionDate?: string;
+}
+
+export interface PromotionRecord {
+  id: string;
+  fromDesignation: string;
+  toDesignation: string;
+  effectiveDate: string;
+  siteId?: string;
+  siteName?: string;
+  referenceNo?: string;
+  remarks?: string;
+  promotedAt: string;
+  promotedBy?: string;
 }
 
 export interface EmploymentStint {
@@ -667,6 +683,8 @@ export interface FirestoreEmployee {
   previousEmployeeId?: string; // Link to past ID if rejoined
   rehiredAs?: string; // Link to new ID if relieved and rejoined
   designation?: string; // Denormalized for display
+  promotionHistory?: PromotionRecord[]; // History of designation promotions
+  lastPromotionDate?: string; // ISO date string of most recent promotion
   profilePhotoURL?: string; // Firebase Storage URL
   clientIds?: Record<string, string>; // New: Store client-specific ID values (e.g. { "BPSS ID": "1234" })
   inviteId?: string;
