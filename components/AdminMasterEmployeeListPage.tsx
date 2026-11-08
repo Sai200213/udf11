@@ -183,8 +183,6 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
   const [promoteRemarks, setPromoteRemarks] = useState('');
   const [isPromoting, setIsPromoting] = useState(false);
 
-  const canPromote = isSuperAdmin || effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_ACTION_PROMOTE) || hasPermission(Permission.EMPLOYEES_EDIT_PROFILE) || hasPermission(Permission.EMPLOYEES_MANAGE_DEPLOYMENTS);
-
   const hasPermission = useCallback((permission: Permission) => {
     if (isSuperAdmin) return true;
     if (authUser?.permissionOverrides?.[permission] === true) return true;
@@ -193,6 +191,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
   }, [isSuperAdmin, authUser, userRole]);
 
   const hasViewScopeAll = effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_VIEW_SCOPE_ALL);
+  const canPromote = isSuperAdmin || effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_ACTION_PROMOTE) || hasPermission(Permission.EMPLOYEES_EDIT_PROFILE) || hasPermission(Permission.EMPLOYEES_MANAGE_DEPLOYMENTS);
 
   // Auth Management State
   const [isAuthUpdating, setIsAuthUpdating] = useState(false);
