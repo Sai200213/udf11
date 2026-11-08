@@ -614,51 +614,58 @@ const AdminReviewSubmissionsPage: React.FC<AdminReviewSubmissionsPageProps> = ({
     if (!selectedSubmissionForDetails) return;
     const sub = selectedSubmissionForDetails;
     setIsPrinting(true);
+    const esc = (val: unknown): string =>
+      String(val ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     try {
-      const name = String(getFieldValue(sub, '7debf274-baee-4bac-a137-4b4b46719874', 'Full Name') || '');
-      const phone = String(getFieldValue(sub, 'eb3617dc-9f1d-475d-a2db-005b6bc2500c', 'Phone Number') || '');
-      const gender = String(getFieldValue(sub, '5df6fa40-c39f-41a7-9ee7-789a47435ef0', 'Gender') || '');
-      const dob = String(getFieldValue(sub, '6e570a01-14e0-4e18-b112-97ddc51d0778', 'Date of Birth') || '');
-      const citizenship = String(getFieldValue(sub, '2fdacb1b-254f-4fc3-923a-53233214124f', 'Citizenship') || '');
-      const bloodGroup = String(getFieldValue(sub, '2f8c72f5-10f4-4414-bfcd-274fc69592e2', 'Blood Group') || '');
-      const height = String(getFieldValue(sub, '5ae316e6-2941-4e58-93b8-a6fe5a200e98', 'Height') || '');
-      const marks = String(getFieldValue(sub, '7386dcfa-e693-4998-a1cb-35a8fa8029de', 'Identity Marks') || '');
-      const maritalStatus = String(getFieldValue(sub, 'c53d7ba7-58a0-4cf0-8691-8eb7bef7b951', 'Marital Status') || '');
-      const spouseName = String(getFieldValue(sub, '7db47bc3-e4cc-4984-9687-2d94cad3e632', 'Spouse Name') || '');
+      const name = esc(getFieldValue(sub, '7debf274-baee-4bac-a137-4b4b46719874', 'Full Name') || '');
+      const phone = esc(getFieldValue(sub, 'eb3617dc-9f1d-475d-a2db-005b6bc2500c', 'Phone Number') || '');
+      const gender = esc(getFieldValue(sub, '5df6fa40-c39f-41a7-9ee7-789a47435ef0', 'Gender') || '');
+      const dob = esc(getFieldValue(sub, '6e570a01-14e0-4e18-b112-97ddc51d0778', 'Date of Birth') || '');
+      const citizenship = esc(getFieldValue(sub, '2fdacb1b-254f-4fc3-923a-53233214124f', 'Citizenship') || '');
+      const bloodGroup = esc(getFieldValue(sub, '2f8c72f5-10f4-4414-bfcd-274fc69592e2', 'Blood Group') || '');
+      const height = esc(getFieldValue(sub, '5ae316e6-2941-4e58-93b8-a6fe5a200e98', 'Height') || '');
+      const marks = esc(getFieldValue(sub, '7386dcfa-e693-4998-a1cb-35a8fa8029de', 'Identity Marks') || '');
+      const maritalStatus = esc(getFieldValue(sub, 'c53d7ba7-58a0-4cf0-8691-8eb7bef7b951', 'Marital Status') || '');
+      const spouseName = esc(getFieldValue(sub, '7db47bc3-e4cc-4984-9687-2d94cad3e632', 'Spouse Name') || '');
 
-      const qualification = String(getFieldValue(sub, '61b19d37-b860-44ef-80e9-d33c3b438655', 'Qualification') || '');
-      const designation = String(getFieldValue(sub, 'db307195-cf54-4a6e-9056-f3974b050c4d', 'Post of Apply') || getFieldValue(sub, 'db307195-cf54-4a6e-9056-f3974b050c4d', 'Designation') || '');
-      const siteName = String(getFieldValue(sub, '52ae217b-2602-4337-a1cd-a1f9bd36a4b0', 'Unit or Facility') || '');
-      const subUnit = String(getFieldValue(sub, '68a2a893-0100-4740-9602-9988452377c8', 'Specific Location / Sub-Unit') || '');
-      const policeCase = String(getFieldValue(sub, '0c8a587e-08f3-4605-ad33-9ab34eb46d87', 'Any Police Case') || '');
-      const prevHistory = String(getFieldValue(sub, '4b05d2b6-ff73-4dbe-befa-eba77c8ce1c4', 'Previous Employment History') || '');
-      const experience = String(getFieldValue(sub, 'd16a6da1-fc29-405e-bbb6-cb186b8f8666', 'Previous Company & Experience') || '');
-      const recruitedByName = String((sub as any).recruitedByName || (sub as any).recruitedBy || '');
+      const qualification = esc(getFieldValue(sub, '61b19d37-b860-44ef-80e9-d33c3b438655', 'Qualification') || '');
+      const designation = esc(getFieldValue(sub, 'db307195-cf54-4a6e-9056-f3974b050c4d', 'Post of Apply') || getFieldValue(sub, 'db307195-cf54-4a6e-9056-f3974b050c4d', 'Designation') || '');
+      const siteName = esc(getFieldValue(sub, '52ae217b-2602-4337-a1cd-a1f9bd36a4b0', 'Unit or Facility') || '');
+      const subUnit = esc(getFieldValue(sub, '68a2a893-0100-4740-9602-9988452377c8', 'Specific Location / Sub-Unit') || '');
+      const policeCase = esc(getFieldValue(sub, '0c8a587e-08f3-4605-ad33-9ab34eb46d87', 'Any Police Case') || '');
+      const prevHistory = esc(getFieldValue(sub, '4b05d2b6-ff73-4dbe-befa-eba77c8ce1c4', 'Previous Employment History') || '');
+      const experience = esc(getFieldValue(sub, 'd16a6da1-fc29-405e-bbb6-cb186b8f8666', 'Previous Company & Experience') || '');
+      const recruitedByName = esc((sub as any).recruitedByName || (sub as any).recruitedBy || '');
 
-      const presentAddress = String(getFieldValue(sub, '8532f460-7bcf-4831-ab62-96375b80e6ab', 'Present Address') || '');
-      const permanentAddress = String(getFieldValue(sub, '29bae22a-59db-4b1b-bafd-64e8018a0f4e', 'Permanent Address') || '');
+      const presentAddress = esc(getFieldValue(sub, '8532f460-7bcf-4831-ab62-96375b80e6ab', 'Present Address') || '');
+      const permanentAddress = esc(getFieldValue(sub, '29bae22a-59db-4b1b-bafd-64e8018a0f4e', 'Permanent Address') || '');
 
-      const refName = String(getFieldValue(sub, '2e1f27bf-94e7-421f-b69c-7e8dfaf0ee13', 'Reference Name') || '');
-      const refRelation = String(getFieldValue(sub, '13c82880-161a-4fa9-a8b6-0558d5c88c53', 'Reference Relationship') || '');
-      const refAddress = String(getFieldValue(sub, '7681644c-02f8-4034-b0ce-cc11dfd3dca7', 'Reference Address') || '');
-      const refContact = String(getFieldValue(sub, 'e1479d43-ed04-4fde-a508-130f43b4f12d', 'Reference Contact No') || '');
+      const refName = esc(getFieldValue(sub, '2e1f27bf-94e7-421f-b69c-7e8dfaf0ee13', 'Reference Name') || '');
+      const refRelation = esc(getFieldValue(sub, '13c82880-161a-4fa9-a8b6-0558d5c88c53', 'Reference Relationship') || '');
+      const refAddress = esc(getFieldValue(sub, '7681644c-02f8-4034-b0ce-cc11dfd3dca7', 'Reference Address') || '');
+      const refContact = esc(getFieldValue(sub, 'e1479d43-ed04-4fde-a508-130f43b4f12d', 'Reference Contact No') || '');
 
-      const fatherName = String(getFieldValue(sub, '3f09e364-7875-40a2-9490-41251be20366', "Father's Name") || '');
-      const motherName = String(getFieldValue(sub, 'c432a45e-c1f0-4e64-8002-1f1dba3bf660', "Mother's Name") || '');
-      const fatherMobile = String(getFieldValue(sub, '30d78dae-fb7c-4264-a159-c04993d8885c', "Father's Mobile Number") || '');
-      const motherMobile = String(getFieldValue(sub, '30fab2de-452d-46bf-8079-2f53d322388d', "Mother's Mobile Number") || '');
+      const fatherName = esc(getFieldValue(sub, '3f09e364-7875-40a2-9490-41251be20366', "Father's Name") || '');
+      const motherName = esc(getFieldValue(sub, 'c432a45e-c1f0-4e64-8002-1f1dba3bf660', "Mother's Name") || '');
+      const fatherMobile = esc(getFieldValue(sub, '30d78dae-fb7c-4264-a159-c04993d8885c', "Father's Mobile Number") || '');
+      const motherMobile = esc(getFieldValue(sub, '30fab2de-452d-46bf-8079-2f53d322388d', "Mother's Mobile Number") || '');
 
-      const aadharNo = String(getFieldValue(sub, '18855ee9-0d66-41d6-988b-128b776a8c5b', 'Aadhar Card No') || '');
-      const panNo = String(getFieldValue(sub, 'da8edb18-4bed-41ca-8233-2280b97dac8d', 'PAN Card No') || '');
-      const uanNo = String(getFieldValue(sub, 'f6665f3e-98f4-4d92-8b53-adcaa1993bbe', 'UAN No or EPFO') || '');
-      const esicNo = String(getFieldValue(sub, '41e3505e-15fb-4067-9c6a-2c690e736fab', 'ESIC No') || '');
-      const pvcStatus = String(getFieldValue(sub, '1052957c-a885-494e-af2c-ae1af5c5cc8e', 'PVC (Police Verification Certificate)') || '');
-      const pvcNumber = String(getFieldValue(sub, '791bdd86-20c2-4097-bcc1-c85e8f649961', 'PVC Number (If YES)') || '');
+      const aadharNo = esc(getFieldValue(sub, '18855ee9-0d66-41d6-988b-128b776a8c5b', 'Aadhar Card No') || '');
+      const panNo = esc(getFieldValue(sub, 'da8edb18-4bed-41ca-8233-2280b97dac8d', 'PAN Card No') || '');
+      const uanNo = esc(getFieldValue(sub, 'f6665f3e-98f4-4d92-8b53-adcaa1993bbe', 'UAN No or EPFO') || '');
+      const esicNo = esc(getFieldValue(sub, '41e3505e-15fb-4067-9c6a-2c690e736fab', 'ESIC No') || '');
+      const pvcStatus = esc(getFieldValue(sub, '1052957c-a885-494e-af2c-ae1af5c5cc8e', 'PVC (Police Verification Certificate)') || '');
+      const pvcNumber = esc(getFieldValue(sub, '791bdd86-20c2-4097-bcc1-c85e8f649961', 'PVC Number (If YES)') || '');
 
-      const bankName = String(getFieldValue(sub, '1a35eaa7-d302-4e49-8649-e85cab8b3b77', 'Bank Name') || '');
-      const accountNo = String(getFieldValue(sub, '3519c111-aaa6-4fe0-8d83-d03dd7612e28', 'Account No') || '');
-      const ifscCode = String(getFieldValue(sub, '86854000-7727-40bb-9932-09e28e443ad8', 'IFSC Code') || '');
-      const branchName = String(getFieldValue(sub, '6fe166fc-29a3-41ea-a19f-a498b48089b9', 'Branch Name') || '');
+      const bankName = esc(getFieldValue(sub, '1a35eaa7-d302-4e49-8649-e85cab8b3b77', 'Bank Name') || '');
+      const accountNo = esc(getFieldValue(sub, '3519c111-aaa6-4fe0-8d83-d03dd7612e28', 'Account No') || '');
+      const ifscCode = esc(getFieldValue(sub, '86854000-7727-40bb-9932-09e28e443ad8', 'IFSC Code') || '');
+      const branchName = esc(getFieldValue(sub, '6fe166fc-29a3-41ea-a19f-a498b48089b9', 'Branch Name') || '');
 
       const photoVal = getFieldValue(sub, '7fbd2b8f-62b5-402d-a1dd-262531fa00af', 'Passport Size Photo');
       let photoPath = typeof photoVal === 'object' && photoVal !== null && 'storagePath' in photoVal

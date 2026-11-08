@@ -300,7 +300,7 @@ exports.setStaffUserStatus = secureOnCall(async (request) => {
     if (!callerDoc.exists) {
         callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
     }
-    if (!callerDoc.exists || callerDoc.data().roleId !== 'role-super-admin') {
+    if (!callerDoc.exists || callerDoc.data().roleId !== 'role-super-admin' || callerDoc.data().isDisabled === true || callerDoc.data().isActive === false) {
         throw new functions.https.HttpsError('permission-denied', 'Only SuperAdmins can manage staff status.');
     }
 
@@ -340,7 +340,7 @@ exports.resetStaffUserPassword = secureOnCall(async (request) => {
     if (!callerDoc.exists) {
         callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
     }
-    if (!callerDoc.exists || callerDoc.data().roleId !== 'role-super-admin') {
+    if (!callerDoc.exists || callerDoc.data().roleId !== 'role-super-admin' || callerDoc.data().isDisabled === true || callerDoc.data().isActive === false) {
         throw new functions.https.HttpsError('permission-denied', 'Only SuperAdmins can reset staff passwords.');
     }
 
@@ -1994,6 +1994,7 @@ exports.getBatchSignedViewUrls = secureOnCall(async (request) => {
     try {
         // 1. Check if caller is Admin or Staff
         let isAdminOrStaff = false;
+        let staffDoc = null;
         if (request.auth.token && (request.auth.token.isAdmin === true || request.auth.token.isSuperAdmin === true)) {
             isAdminOrStaff = true;
         } else {
@@ -2002,7 +2003,7 @@ exports.getBatchSignedViewUrls = secureOnCall(async (request) => {
                 db.collection('staff').doc(uid).get(),
                 db.collection('staff_accounts').doc(uid).get()
             ]);
-            const staffDoc = (staffAccSnap.exists ? staffAccSnap.data() : (staffSnap.exists ? staffSnap.data() : (userSnap.exists ? userSnap.data() : null)));
+            staffDoc = (staffAccSnap.exists ? staffAccSnap.data() : (staffSnap.exists ? staffSnap.data() : (userSnap.exists ? userSnap.data() : null)));
             if (staffDoc && staffDoc.isDisabled !== true && staffDoc.isActive !== false && staffDoc.status !== 'relieved' && staffDoc.status !== 'terminated') {
                 isAdminOrStaff = true;
             } else if (request.auth.token && request.auth.token.email && request.auth.token.email_verified) {
@@ -2017,22 +2018,44 @@ exports.getBatchSignedViewUrls = secureOnCall(async (request) => {
                     const sData = matchedDoc.data();
                     if (sData.isDisabled !== true && sData.isActive !== false && sData.status !== 'relieved' && sData.status !== 'terminated') {
                         isAdminOrStaff = true;
+                        staffDoc = sData;
                     }
                 }
             }
         }
 
+        const isSuperAdminCaller = (request.auth.token && request.auth.token.isSuperAdmin) || 
+                                   (staffDoc && (staffDoc.roleId === 'role-super-admin' || staffDoc.type === 'Admin')) ||
+                                   (request.auth.token && request.auth.token.permissions && request.auth.token.permissions.includes('EMPLOYEES_VIEW_SCOPE_ALL'));
+        const staffSites = (staffDoc && Array.isArray(staffDoc.sitesManaged)) ? staffDoc.sitesManaged : (request.auth.token?.sitesManaged || []);
+
         // Cache authorization decisions per target ID / folder to avoid repeated Firestore lookups
         const authCache = new Map();
 
         const checkPathAuthorization = async (p) => {
-            if (isAdminOrStaff) return true;
+            if (isAdminOrStaff && isSuperAdminCaller) return true;
             if (typeof p !== 'string') return false;
             const cleanPath = p.trim().replace(/^\/+/, '');
             if (cleanPath.startsWith('public/')) return true;
 
             const parts = cleanPath.split('/');
             const root = parts[0];
+            const targetId = parts[1];
+
+            if (isAdminOrStaff) {
+                if (!targetId) return true;
+                const cacheKey = `staff_site:${targetId}`;
+                if (authCache.has(cacheKey)) return authCache.get(cacheKey);
+                const [targetEmp, targetSub] = await Promise.all([
+                    db.collection('employees').doc(targetId).get(),
+                    db.collection('onboarding_submissions').doc(targetId).get()
+                ]);
+                const docData = (targetEmp.exists ? targetEmp.data() : (targetSub.exists ? targetSub.data() : null)) || {};
+                const docSite = docData.siteId || docData.currentSiteId || '';
+                const allowed = (!docSite || staffSites.includes(docSite));
+                authCache.set(cacheKey, allowed);
+                return allowed;
+            }
             const targetId = parts[1];
 
             if (!root || !targetId) return false;
@@ -2430,7 +2453,7 @@ exports.getStorageFolderSizeServer = secureOnCall(async (request) => {
             isAuthorized = true;
         } else {
             const staffSnap = await db.collection('staff_accounts').doc(uid).get();
-            if (staffSnap.exists) isAuthorized = true;
+            if (staffSnap.exists && staffSnap.data().isDisabled !== true && staffSnap.data().isActive !== false) isAuthorized = true;
         }
     }
     if (!isAuthorized && cleanPath.startsWith('onboarding/')) {
@@ -5194,6 +5217,17 @@ exports.approveOnboardingServer = secureOnCall(async (request) => {
                 }
             }
         }
+        if (year === '123') {
+            for (const [key, val] of Object.entries(dataObj)) {
+                if (typeof val === 'string' && val.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                    const y = parseInt(val.split('-')[0], 10);
+                    if (y > 1950 && y < 2010) {
+                        year = val.split('-')[0];
+                        break;
+                    }
+                }
+            }
+        }
         const phoneOrAadhaar = request.data.phoneNumber || subData.phoneNumber || request.data.aadhaarNumber || subData.aadhaarNumber || '';
         const cleanSuffix = (phoneOrAadhaar || '').replace(/\D/g, '').slice(-4);
         const serverDefaultPassword = `${firstName}${year}${cleanSuffix ? '@' + cleanSuffix : ''}`;
@@ -5782,7 +5816,11 @@ exports.completeTrainingQuizServer = secureOnCall(async (request) => {
         correctAnswer = rulesData.dailyQuiz.correctAnswer;
     }
 
-    const isCorrect = correctAnswer ? (selectedAnswer === correctAnswer) : true;
+    if (!correctAnswer) {
+        throw new functions.https.HttpsError('failed-precondition', 'Quiz question or correct answer not found.');
+    }
+
+    const isCorrect = (selectedAnswer === correctAnswer);
 
     if (!isCorrect) {
         return {
@@ -5794,7 +5832,8 @@ exports.completeTrainingQuizServer = secureOnCall(async (request) => {
     }
 
     // 4. Atomically update user_engagement points and write to gamification_logs
-    const engagementRef = db.collection('user_engagement').doc(uid);
+    const targetDocId = (request.data && typeof request.data.targetUserId === 'string' && request.data.targetUserId) ? request.data.targetUserId : uid;
+    const engagementRef = db.collection('user_engagement').doc(targetDocId);
     const logRef = db.collection('gamification_logs').doc();
 
     const batch = db.batch();
@@ -5804,6 +5843,14 @@ exports.completeTrainingQuizServer = secureOnCall(async (request) => {
         lastQuizDate: today,
         lastUpdated: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+
+    if (targetDocId !== uid) {
+        batch.set(db.collection('user_engagement').doc(uid), {
+            points: admin.firestore.FieldValue.increment(quizPoints),
+            lastQuizDate: today,
+            lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+    }
 
     batch.set(logRef, {
         userId: uid,
@@ -5838,7 +5885,8 @@ function getGoogle() {
 const GOOGLE_FORM_MAPPING = require('./googleFormMapping');
 
 const ROOT_DRIVE_FOLDER_ID = "1XuFLT5v5s1ZSdugKr1XzT0AdYkL-QgBX";
-const APPS_SCRIPT_FALLBACK_URL = "https://script.google.com/macros/s/AKfycbz7dCyY67bQuB9OWdwZ8UvVK9EY1XOwtkpY6UKQks0MyHFZV4drG5L6eZK5HKPO0vI/exec";
+const APPS_SCRIPT_FALLBACK_URL = process.env.APPS_SCRIPT_FALLBACK_URL || "https://script.google.com/macros/s/AKfycbz7dCyY67bQuB9OWdwZ8UvVK9EY1XOwtkpY6UKQks0MyHFZV4drG5L6eZK5HKPO0vI/exec";
+const APPS_SCRIPT_SERVER_SECRET = process.env.APPS_SCRIPT_SERVER_SECRET || 'server_admin';
 const DRIVE_ROOT_FOLDERS = {
     PENDING: 'Pending Employees',
     ACTIVE: 'Active Employees',
@@ -5956,7 +6004,7 @@ async function uploadFileViaAppsScriptServer(storagePath, targetName, uniqueId, 
             employeeName: targetName,
             operationName: folderType || 'Joining Documents',
             uniqueId: uniqueId,
-            token: 'server_admin'
+            token: APPS_SCRIPT_SERVER_SECRET
         })
     });
 
@@ -6318,7 +6366,7 @@ async function appendSubmissionToSheetsServer(recordData, formData, driveFolderU
                 action: 'submit_to_form',
                 fields,
                 email: email || null,
-                token: 'server_admin'
+                token: APPS_SCRIPT_SERVER_SECRET
             })
         });
         const formRes = await res.json();
@@ -6495,6 +6543,14 @@ exports.getDraftSubmissionSecure = secureOnCall(async (request) => {
         await blockRef.delete().catch(() => {});
     }
 
-    return { id: docSnap.id, data: docSnap.data() };
+    const draftData = docSnap.data() || {};
+    if (request.auth && request.auth.uid && !draftData.isGoogleDraft && draftData.ownerUid !== request.auth.uid) {
+        await docSnap.ref.update({
+            activeSessionUid: request.auth.uid,
+            lastUpdated: new Date().toISOString()
+        }).catch(() => {});
+        draftData.activeSessionUid = request.auth.uid;
+    }
+    return { id: docSnap.id, data: draftData };
 });
 

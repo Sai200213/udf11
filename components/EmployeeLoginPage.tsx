@@ -58,12 +58,11 @@ const EmployeeLoginPage: React.FC<EmployeeLoginPageProps> = ({
         // Set portalType BEFORE login so AuthContext uses the correct scope
         localStorage.setItem('portalType', 'employee');
 
-        const { getFunctions, httpsCallable } = await import('firebase/functions');
-        const { auth } = await import('../src/firebase/config');
+        const { httpsCallable } = await import('firebase/functions');
+        const { auth, functions } = await import('../src/firebase/config');
         const { signInWithCustomToken } = await import('firebase/auth');
 
         // Call Cloud Function to verify credentials and get a custom token
-        const functions = getFunctions();
         const employeeLoginFn = httpsCallable(functions, 'employeeLogin');
         const result = await employeeLoginFn({ employeeId, password });
         const { token, employee } = result.data as any;

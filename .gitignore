@@ -47,3 +47,7 @@ Antigravity_Backup/
 RESTORED_FEB_14/
 STABLE_RESTORED/
 backups/
+
+# Understand-Anything Knowledge Graph Cache
+.ua/
+.understand-anything/

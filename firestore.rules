@@ -44,6 +44,9 @@ service cloud.firestore {
       return isSuperAdmin() ||
              hasPermission('EMPLOYEES_VIEW_SCOPE_ALL') ||
              hasPermission('SUBMISSIONS_VIEW_SCOPE_ALL') ||
+             hasPermission('LEAVES_VIEW_SCOPE_ALL') ||
+             hasPermission('ACCOUNT_UPDATES_VIEW_SCOPE_ALL') ||
+             hasPermission('RESIGNATIONS_VIEW_SCOPE_ALL') ||
              hasPermission('MANAGE_SITES') ||
              hasPermission('MANAGE_ALL_SITES') ||
              (siteId != null && siteId != '' &&
@@ -157,7 +160,7 @@ service cloud.firestore {
       allow create: if request.resource.data.name is string &&
                        request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 100 &&
                        request.resource.data.get('email', '') is string &&
-                       request.resource.data.get('email', '').size() >= 5 && request.resource.data.get('email', '').size() <= 120 &&
+                       (request.resource.data.get('email', '') == '' || (request.resource.data.get('email', '').size() >= 5 && request.resource.data.get('email', '').size() <= 120)) &&
                        request.resource.data.get('message', '') is string &&
                        request.resource.data.get('message', '').size() >= 5 && request.resource.data.get('message', '').size() <= 3000 &&
                        // Honeypot check: bot field must remain empty
@@ -189,8 +192,11 @@ service cloud.firestore {
       allow get: if resource == null ||
                     hasActiveCorrectionToken(resource.data) ||
                     isSelfEmployee(userId, resource.data) || 
-                    (isAdmin() && canStaffViewSite(resource.data.get('currentSiteId', resource.data.get('siteId', ''))));
-      allow list: if (isAdmin() && canStaffViewSite(resource.data.get('currentSiteId', resource.data.get('siteId', '')))) || (isAuthenticated() && (
+                    (isAdmin() && (
+                      canStaffViewSite(resource.data.get('currentSiteId', resource.data.get('siteId', ''))) ||
+                      resource.data.get('assignedSiteIds', []).hasAny(request.auth.token.get('sitesManaged', []))
+                    ));
+      allow list: if isAdmin() || (isAuthenticated() && (
         resource.data.get('uid', '') == request.auth.uid || 
         resource.data.get('linkedUid', '') == request.auth.uid
       ));
@@ -220,7 +226,7 @@ service cloud.firestore {
                     hasActiveCorrectionToken(resource.data) ||
                     isSelfSubmission(resource.data) || 
                     (isAdmin() && canStaffViewSite(resource.data.get('siteId', '')));
-      allow list: if (isAdmin() && canStaffViewSite(resource.data.get('siteId', ''))) || (isAuthenticated() && (
+      allow list: if isAdmin() || (isAuthenticated() && (
         resource.data.get('linkedUid', '') == request.auth.uid ||
         resource.data.get('uid', '') == request.auth.uid ||
         resource.data.get('ownerUid', '') == request.auth.uid ||
@@ -268,12 +274,18 @@ service cloud.firestore {
 
     // ─── Leave Requests ──────────────────────────────────────────────────────
     match /leave_requests/{id} {
-      allow read: if (isAdmin() && canStaffViewSite(resource.data.get('siteId', ''))) || 
-                     (isRegisteredUser() && (
-                       resource.data.employeeId == request.auth.uid || 
-                       resource.data.get('uid', '') == request.auth.uid ||
-                       isOwnerOfPortalId(resource.data.employeeId)
-                     ));
+      allow get: if (isAdmin() && (resource.data.get('siteId', '') == '' || canStaffViewSite(resource.data.get('siteId', '')))) || 
+                    (isRegisteredUser() && (
+                      resource.data.employeeId == request.auth.uid || 
+                      resource.data.get('uid', '') == request.auth.uid ||
+                      isOwnerOfPortalId(resource.data.employeeId)
+                    ));
+      allow list: if isAdmin() || 
+                    (isRegisteredUser() && (
+                      resource.data.employeeId == request.auth.uid || 
+                      resource.data.get('uid', '') == request.auth.uid ||
+                      isOwnerOfPortalId(resource.data.employeeId)
+                    ));
       allow create: if isRegisteredUser() && (
         isAdmin() || (
           request.resource.data.status == 'Pending' &&
@@ -292,12 +304,18 @@ service cloud.firestore {
 
     // ─── Account Update Requests ─────────────────────────────────────────────
     match /account_updates/{id} {
-      allow read: if (isAdmin() && canStaffViewSite(resource.data.get('siteId', ''))) || 
-                     (isRegisteredUser() && (
-                       resource.data.employeeId == request.auth.uid || 
-                       resource.data.get('uid', '') == request.auth.uid ||
-                       isOwnerOfPortalId(resource.data.employeeId)
-                     ));
+      allow get: if (isAdmin() && (resource.data.get('siteId', '') == '' || canStaffViewSite(resource.data.get('siteId', '')))) || 
+                    (isRegisteredUser() && (
+                      resource.data.employeeId == request.auth.uid || 
+                      resource.data.get('uid', '') == request.auth.uid ||
+                      isOwnerOfPortalId(resource.data.employeeId)
+                    ));
+      allow list: if isAdmin() || 
+                    (isRegisteredUser() && (
+                      resource.data.employeeId == request.auth.uid || 
+                      resource.data.get('uid', '') == request.auth.uid ||
+                      isOwnerOfPortalId(resource.data.employeeId)
+                    ));
       allow create: if isRegisteredUser() && (
         isAdmin() || (
           request.resource.data.status == 'Pending' &&
@@ -316,12 +334,18 @@ service cloud.firestore {
 
     // ─── Resignations ────────────────────────────────────────────────────────
     match /resignations/{id} {
-      allow read: if (isAdmin() && canStaffViewSite(resource.data.get('siteId', ''))) || 
-                     (isRegisteredUser() && (
-                       resource.data.employeeId == request.auth.uid || 
-                       resource.data.get('uid', '') == request.auth.uid ||
-                       isOwnerOfPortalId(resource.data.employeeId)
-                     ));
+      allow get: if (isAdmin() && (resource.data.get('siteId', '') == '' || canStaffViewSite(resource.data.get('siteId', '')))) || 
+                    (isRegisteredUser() && (
+                      resource.data.employeeId == request.auth.uid || 
+                      resource.data.get('uid', '') == request.auth.uid ||
+                      isOwnerOfPortalId(resource.data.employeeId)
+                    ));
+      allow list: if isAdmin() || 
+                    (isRegisteredUser() && (
+                      resource.data.employeeId == request.auth.uid || 
+                      resource.data.get('uid', '') == request.auth.uid ||
+                      isOwnerOfPortalId(resource.data.employeeId)
+                    ));
       allow create: if isRegisteredUser() && (
         isAdmin() || (
           request.resource.data.status == 'Pending' &&
@@ -496,10 +520,16 @@ service cloud.firestore {
                     request.resource.data.get('points', 0) >= 0 &&
                     request.resource.data.get('points', 0) <= 50 && 
                     request.resource.data.get('referralCount', 0) == 0;
-      // SEC-17: Points and referralCount can ONLY be mutated by Cloud Functions (Admin SDK) or SuperAdmin; clients cannot inflate points
+      // SEC-17: Prevent arbitrary point farming while permitting legitimate reward deductions & 1x/day streak increments
       allow update: if isSuperAdmin() || (
         isAuthenticated() && (isOwnerOfPortalId(id) || isAdmin()) &&
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['referralCount', 'points'])
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['referralCount']) && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['points']) ||
+          (request.resource.data.get('points', 0) >= 0 && request.resource.data.get('points', 0) <= resource.data.get('points', 0)) ||
+          (request.resource.data.get('lastVisitDate', '') != resource.data.get('lastVisitDate', '') &&
+           request.resource.data.get('points', 0) >= 0 &&
+           request.resource.data.get('points', 0) <= resource.data.get('points', 0) + 5)
+        )
       );
       allow delete: if isAdmin();
     }

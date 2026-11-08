@@ -28,8 +28,9 @@ const AdminWebsiteManager: React.FC<{ isSuperAdmin: boolean; userRole?: any }> =
     const fetchMetrics = async () => {
         setLoadingMetrics(true);
         try {
-            const { getFunctions, httpsCallable } = await import('firebase/functions');
-            const getSystemMetrics = httpsCallable(getFunctions(), 'getSystemMetrics');
+            const { httpsCallable } = await import('firebase/functions');
+            const { functions } = await import('../src/firebase/config');
+            const getSystemMetrics = httpsCallable(functions, 'getSystemMetrics');
             const result = await getSystemMetrics();
             setMetrics(result.data);
         } catch (err) {

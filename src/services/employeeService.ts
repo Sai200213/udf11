@@ -550,7 +550,9 @@ const getNextSubmissionId = async (): Promise<string> => {
     let attempts = 0;
     while (exists && attempts < 10) {
         attempts++;
-        const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
+        const randBuf = new Uint32Array(2);
+        crypto.getRandomValues(randBuf);
+        const randomStr = (randBuf[0].toString(36) + randBuf[1].toString(36)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase();
         candidate = `UDF-${year}${month}-${randomStr}`;
         try {
             const draftSnap = await getDoc(doc(db, DRAFTS_COLLECTION, candidate));

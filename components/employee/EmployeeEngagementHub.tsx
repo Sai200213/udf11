@@ -102,13 +102,14 @@ const EmployeeEngagementHub: React.FC<EmployeeEngagementHubProps> = ({ authUser,
 
         try {
             // SEC-17: Route quiz completion and points strictly through secure server function
-            const completeQuizFn = httpsCallable<{ selectedAnswer: string; questionId?: string }, { success: boolean; pointsAwarded?: number }>(functions, 'completeTrainingQuizServer');
-            const res = await completeQuizFn({ selectedAnswer: quizAnswer, questionId: currentQuizObj?.id });
-            const awarded = res.data?.pointsAwarded ?? (isCorrect ? awardedPoints : 0);
+            const completeQuizFn = httpsCallable<{ selectedAnswer: string; questionId?: string; targetUserId?: string }, { success: boolean; pointsEarned?: number; isCorrect?: boolean }>(functions, 'completeTrainingQuizServer');
+            const res = await completeQuizFn({ selectedAnswer: quizAnswer, questionId: currentQuizObj?.id, targetUserId: userId });
+            const awarded = res.data?.pointsEarned ?? (isCorrect ? awardedPoints : 0);
 
             const docRef = doc(db, 'user_engagement', userId);
+            const { points: _omitPoints, referralCount: _omitRef, ...safeStreak } = (streak || { userId, userName, streakCount: 1, lastVisitDate: today }) as any;
             const updated = {
-                ...(streak || { userId, userName, streakCount: 1, lastVisitDate: today }),
+                ...safeStreak,
                 lastQuizDate: today,
                 lastQuizOption: quizAnswer,
                 lastQuizCorrect: isCorrect

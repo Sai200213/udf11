@@ -827,7 +827,9 @@ export const bulkImportEmployees = async (
             const now = new Date();
             const year = now.getFullYear();
             const month = String(now.getMonth() + 1).padStart(2, '0');
-            const randomStr = Math.random().toString(36).substring(2, 6).toUpperCase();
+            const randBuf = new Uint32Array(2);
+            crypto.getRandomValues(randBuf);
+            const randomStr = (randBuf[0].toString(36) + randBuf[1].toString(36)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase();
             let submissionId = `UDF-${year}${month}-${randomStr}`;
 
             // If overwriting an existing record

@@ -1279,12 +1279,6 @@ const App: React.FC = () => {
 
     const processedData = { ...requestData };
     const userUniqueId = authUser.portalId || authUser.id;
-    for (const [key, value] of Object.entries(requestData)) {
-      if (value instanceof File) {
-        const driveUrl = await uploadToDrive(value, authUser.name || userUniqueId, "Leave Proofs", userUniqueId);
-        processedData[key] = driveUrl;
-      }
-    }
 
     const newRequest: LeaveRequest = {
       ...processedData,
@@ -1312,10 +1306,6 @@ const App: React.FC = () => {
 
     const processedData = { ...requestData };
     const userUniqueId = authUser.portalId || authUser.id;
-    if (requestData.document instanceof File) {
-      const driveUrl = await uploadToDrive(requestData.document, authUser.name || userUniqueId, "Resignations", userUniqueId);
-      processedData.document = driveUrl;
-    }
 
     const reqSiteId = processedData.siteId || employeeData?.currentSiteId || '';
     const matchingSite = sites.find(s => s.id === reqSiteId);
@@ -1367,25 +1357,11 @@ const App: React.FC = () => {
   const handleAddDisciplinaryAction = useCallback(async (actionData: any) => {
     if (!authUser) return;
 
-    let docUrl = undefined;
-    if (actionData.document instanceof File) {
-      try {
-        docUrl = await uploadToDrive(actionData.document, actionData.employeeName, "Disciplinary Action", actionData.employeeId);
-      } catch (error) {
-        console.error("Failed to upload disciplinary doc:", error);
-        alert("Failed to upload document, but proceeding with action log.");
-      }
-    }
-
-    // Create a clean object for Firestore without the File object
-    const { document, ...cleanActionData } = actionData;
-
     const newAction: DisciplinaryAction = {
-      ...cleanActionData,
+      ...actionData,
       id: uuidv4(),
       filedBy: authUser.name || 'Admin',
-      filedByRoleId: authUser.roleId || 'super-admin',
-      documentUrl: docUrl
+      filedByRoleId: authUser.roleId || 'super-admin'
     };
     await addDisciplinaryAction(newAction);
     logSystemAction('CREATE', 'EMPLOYEES', `Issued ${actionData.actionType} to ${actionData.employeeName}.`);
@@ -1432,14 +1408,6 @@ const App: React.FC = () => {
 
     const processedData = { ...requestData };
     const userUniqueId = authUser.portalId || authUser.id;
-    if (requestData.requestedValue instanceof File) {
-      const driveUrl = await uploadToDrive(requestData.requestedValue, authUser.name || userUniqueId, "Profile Updates", userUniqueId);
-      processedData.requestedValue = driveUrl;
-    }
-    if (requestData.supportingDocument instanceof File) {
-      const driveUrl = await uploadToDrive(requestData.supportingDocument, authUser.name || userUniqueId, "Profile Updates", userUniqueId);
-      processedData.supportingDocument = driveUrl;
-    }
 
     const reqSiteId = employeeData?.currentSiteId || (authUser as any).currentSiteId || '';
 
