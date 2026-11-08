@@ -1,3 +1,4 @@
+
 import log from '../src/utils/logger';
 
 import React, { useMemo, useState, useCallback } from 'react';
@@ -14,6 +15,7 @@ import { BulkImportResult } from '../src/utils/bulkImportUtils';
 import SecureDocumentLink from '../src/components/common/SecureDocumentLink';
 import { getBatchSignedURLs } from '../src/services/storageService';
 import RequestCorrectionModal from './common/RequestCorrectionModal';
+import { printPromotionLetter } from '../src/utils/promotionLetterGenerator';
 import { User as SystemUser } from '../types';
 import { useData } from '../src/contexts/DataContext';
 
@@ -181,377 +183,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
   const [promoteRemarks, setPromoteRemarks] = useState('');
   const [isPromoting, setIsPromoting] = useState(false);
 
-  const availableDesignations = useMemo(() => {
-    const set = new Set<string>();
-    if (portalConfig?.designations && Array.isArray(portalConfig.designations)) {
-      portalConfig.designations.forEach(d => { if (d) set.add(d); });
-    }
-    const targetSiteId = promoteSiteId || (promoteTarget as any)?.currentSiteId || (promoteTarget as any)?.siteId;
-    const siteObj = safeSites.find(s => s.id === targetSiteId);
-    if (siteObj?.allowedDesignations && Array.isArray(siteObj.allowedDesignations)) {
-      siteObj.allowedDesignations.forEach(d => { if (d) set.add(d); });
-    }
-    const defaults = [
-      'Security Guard',
-      'Head Guard',
-      'Lady Security Guard',
-      'Gunman',
-      'Security Supervisor',
-      'Field Officer',
-      'Assistant Security Officer',
-      'Security Officer',
-      'Site Incharge',
-      'Operations Manager'
-    ];
-    defaults.forEach(d => set.add(d));
-    return Array.from(set);
-  }, [portalConfig, promoteSiteId, promoteTarget, safeSites]);
-
-  const openPromoteModal = useCallback((emp: SubmittedFormData) => {
-    setPromoteTarget(emp);
-    setPromoteNewDesignation('');
-    setPromoteCustomDesignation('');
-    setPromoteEffectiveDate(new Date().toISOString().split('T')[0]);
-    setPromoteSiteId((emp as any).currentSiteId || (emp as any).siteId || '');
-    setPromoteRefNo(`UDF/PRM/${new Date().getFullYear()}/${Math.random().toString(36).substring(2, 7).toUpperCase()}`);
-    setPromoteRemarks('');
-    setIsPromoteModalOpen(true);
-  }, []);
-
-  const handleConfirmPromotion = async () => {
-    if (!promoteTarget) return;
-    const finalDesignation = (promoteNewDesignation === '__CUSTOM__' ? promoteCustomDesignation : promoteNewDesignation).trim();
-    if (!finalDesignation) {
-      alert("Please select or enter the new designation.");
-      return;
-    }
-    const currentDesig = (promoteTarget as any).designation || (promoteTarget as any).profileData?.designation || (promoteTarget.data as any)?.designation || 'Staff';
-    if (finalDesignation === currentDesig) {
-      alert(`The employee is already assigned the designation "${currentDesig}". Please choose a different designation.`);
-      return;
-    }
-    const targetSiteObj = safeSites.find(s => s.id === promoteSiteId);
-    const resolvedSiteName = targetSiteObj ? targetSiteObj.name : undefined;
-
-    setIsPromoting(true);
-    try {
-      const record = await promoteEmployee({
-        employeeId: promoteTarget.employeeId || promoteTarget.id,
-        newDesignation: finalDesignation,
-        effectiveDate: promoteEffectiveDate,
-        newSiteId: promoteSiteId || undefined,
-        newSiteName: resolvedSiteName,
-        referenceNo: promoteRefNo,
-        remarks: promoteRemarks,
-        promotedBy: authUser?.name || authUser?.id || 'Admin'
-      });
-
-      // Update local paginated list
-      setPaginatedData(prev => prev.map(item => {
-        if (item.id === promoteTarget.id || item.employeeId === promoteTarget.employeeId) {
-          const updatedHistory = [...((item as any).promotionHistory || []), record];
-          return {
-            ...item,
-            designation: finalDesignation,
-            profileData: {
-              ...(item.profileData || {}),
-              designation: finalDesignation
-            },
-            currentSiteId: promoteSiteId || (item as any).currentSiteId,
-            siteName: resolvedSiteName || item.siteName,
-            promotionHistory: updatedHistory,
-            lastPromotionDate: promoteEffectiveDate
-          } as any;
-        }
-        return item;
-      }));
-
-      // Update management target if open
-      if (managementTarget && (managementTarget.id === promoteTarget.id || managementTarget.employeeId === promoteTarget.employeeId)) {
-        setManagementTarget(prev => prev ? {
-          ...prev,
-          designation: finalDesignation,
-          profileData: {
-            ...(prev.profileData || {}),
-            designation: finalDesignation
-          },
-          currentSiteId: promoteSiteId || (prev as any).currentSiteId,
-          siteName: resolvedSiteName || prev.siteName,
-          promotionHistory: [...((prev as any).promotionHistory || []), record],
-          lastPromotionDate: promoteEffectiveDate
-        } as any : null);
-      }
-
-      alert(`Successfully promoted ${promoteTarget.applicantName || promoteTarget.employeeId} to "${finalDesignation}"!`);
-      setIsPromoteModalOpen(false);
-    } catch (err: any) {
-      console.error("[handleConfirmPromotion] Error:", err);
-      alert(`Promotion Failed: ${err.message || 'Unknown error'}`);
-    } finally {
-      setIsPromoting(false);
-    }
-  };
-
-  const handlePrintPromotionLetter = () => {
-    if (!promoteTarget) return;
-    const finalDesignation = (promoteNewDesignation === '__CUSTOM__' ? promoteCustomDesignation : promoteNewDesignation).trim() || 'New Designation';
-    const currentDesig = (promoteTarget as any).designation || (promoteTarget as any).profileData?.designation || (promoteTarget.data as any)?.designation || 'Staff';
-    const empName = promoteTarget.applicantName || 'Employee';
-    const empId = promoteTarget.employeeId || promoteTarget.id;
-    const targetSiteObj = safeSites.find(s => s.id === promoteSiteId);
-    const resolvedSiteName = targetSiteObj ? targetSiteObj.name : (promoteTarget.siteName || 'Designated Deployment Site');
-    const refNumber = promoteRefNo || `UDF/PRM/${new Date().getFullYear()}/001`;
-    const formattedDate = new Date(promoteEffectiveDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-
-    const esc = (val: unknown): string =>
-      String(val ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-
-    const printWin = window.open('', '_blank', 'width=850,height=1100');
-    if (!printWin) {
-      alert("Please allow popups to generate the promotion letter.");
-      return;
-    }
-
-    printWin.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Promotion Letter - ${esc(empName)} (${esc(empId)})</title>
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Cinzel:wght@700&display=swap" rel="stylesheet">
-        <style>
-          @page { size: A4; margin: 20mm; }
-          body {
-            font-family: 'Inter', sans-serif;
-            color: #1e293b;
-            line-height: 1.6;
-            margin: 0;
-            padding: 24px;
-            background: #fff;
-          }
-          .letter-container {
-            max-width: 720px;
-            margin: 0 auto;
-            border: 1px solid #e2e8f0;
-            padding: 40px;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
-          }
-          @media print {
-            body { padding: 0; }
-            .letter-container { border: none; padding: 0; box-shadow: none; }
-            .no-print { display: none; }
-          }
-          .header {
-            text-align: center;
-            border-bottom: 2px solid #0f172a;
-            padding-bottom: 16px;
-            margin-bottom: 24px;
-          }
-          .company-name {
-            font-family: 'Cinzel', serif;
-            font-size: 20px;
-            font-weight: 700;
-            color: #0f172a;
-            letter-spacing: 1px;
-            margin: 0;
-          }
-          .company-tagline {
-            font-size: 10px;
-            font-weight: 600;
-            color: #64748b;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-top: 4px;
-          }
-          .company-sub {
-            font-size: 11px;
-            color: #475569;
-            margin-top: 4px;
-          }
-          .meta-bar {
-            display: flex;
-            justify-content: space-between;
-            font-size: 12px;
-            font-weight: 600;
-            margin-bottom: 24px;
-            color: #334155;
-          }
-          .recipient-block {
-            margin-bottom: 24px;
-            font-size: 13px;
-          }
-          .subject {
-            text-align: center;
-            font-size: 14px;
-            font-weight: 800;
-            text-transform: uppercase;
-            text-decoration: underline;
-            margin: 24px 0;
-            color: #0f172a;
-            letter-spacing: 0.5px;
-          }
-          .body-text {
-            font-size: 13px;
-            text-align: justify;
-            margin-bottom: 16px;
-            color: #334155;
-          }
-          .details-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            font-size: 12px;
-          }
-          .details-table th, .details-table td {
-            border: 1px solid #cbd5e1;
-            padding: 8px 12px;
-            text-align: left;
-          }
-          .details-table th {
-            background-color: #f8fafc;
-            font-weight: 700;
-            width: 35%;
-            color: #1e293b;
-          }
-          .details-table td {
-            font-weight: 600;
-            color: #0f172a;
-          }
-          .sign-block {
-            margin-top: 48px;
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-          }
-          .sign-unit {
-            text-align: left;
-            font-size: 12px;
-          }
-          .sign-line {
-            width: 180px;
-            border-top: 1px solid #94a3b8;
-            margin-top: 48px;
-            padding-top: 6px;
-          }
-          .print-btn {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 10px 18px;
-            border-radius: 8px;
-            font-weight: 700;
-            cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-          }
-        </style>
-      </head>
-      <body>
-        <button class="print-btn no-print" onclick="window.print()">🖨️ Print / Save PDF</button>
-        <div class="letter-container">
-          <div class="header">
-            <h1 class="company-name">UNIQUE DELTA FORCE SECURITY SERVICES PVT LTD</h1>
-            <p class="company-tagline">Excellence in Security, Vigilance & Facility Operations</p>
-            <p class="company-sub">Regd. Off: Hitech City, Hyderabad, Telangana — 500081 | Email: hr@udfonline.in | Web: www.udfonline.in</p>
-          </div>
-
-          <div class="meta-bar">
-            <span><strong>Ref:</strong> ${esc(refNumber)}</span>
-            <span><strong>Date:</strong> ${esc(formattedDate)}</span>
-          </div>
-
-          <div class="recipient-block">
-            <strong>To,</strong><br>
-            <strong>${esc(empName)}</strong><br>
-            Employee ID: <strong>${esc(empId)}</strong><br>
-            Current Designation: ${esc(currentDesig)}<br>
-            Deployment Location: ${esc(resolvedSiteName)}
-          </div>
-
-          <div class="subject">
-            SUBJECT: PROMOTION ORDER — ELEVATION TO ${esc(finalDesignation.toUpperCase())}
-          </div>
-
-          <p class="body-text">
-            Dear <strong>${esc(empName)}</strong>,
-          </p>
-
-          <p class="body-text">
-            We are pleased to inform you that in recognition of your consistent diligence, exemplary discipline, and valuable contribution to Unique Delta Force Security Services Pvt. Ltd., the Management is delighted to promote you to the cadre of <strong>${esc(finalDesignation)}</strong> with effect from <strong>${esc(formattedDate)}</strong>.
-          </p>
-
-          <p class="body-text">
-            In your elevated capacity, you will assume expanded operational leadership, supervision, and security responsibilities. The summary of your revised deployment details is outlined below:
-          </p>
-
-          <table class="details-table">
-            <tr>
-              <th>Employee Name</th>
-              <td>${esc(empName)}</td>
-            </tr>
-            <tr>
-              <th>Employee ID</th>
-              <td>${esc(empId)}</td>
-            </tr>
-            <tr>
-              <th>Previous Cadre / Designation</th>
-              <td>${esc(currentDesig)}</td>
-            </tr>
-            <tr>
-              <th>Elevated Cadre / Designation</th>
-              <td style="color: #2563eb; font-weight: 800;">${esc(finalDesignation)}</td>
-            </tr>
-            <tr>
-              <th>Effective Date</th>
-              <td>${esc(formattedDate)}</td>
-            </tr>
-            <tr>
-              <th>Posting / Operational Site</th>
-              <td>${esc(resolvedSiteName)}</td>
-            </tr>
-            ${promoteRemarks ? `
-            <tr>
-              <th>Management Citation</th>
-              <td>${esc(promoteRemarks)}</td>
-            </tr>` : ''}
-          </table>
-
-          <p class="body-text">
-            All other terms and conditions governing your employment with the organization shall continue to remain in full force and effect. We take this opportunity to congratulate you on your well-deserved promotion and trust that you will continue to discharge your duties with the highest standards of integrity, alertness, and professional excellence.
-          </p>
-
-          <p class="body-text" style="margin-top: 24px;">
-            We wish you sustained success in your new position.
-          </p>
-
-          <div class="sign-block">
-            <div class="sign-unit">
-              <div class="sign-line">
-                <strong>Employee Signature</strong><br>
-                <span>(Acknowledgement of Acceptance)</span>
-              </div>
-            </div>
-            <div class="sign-unit" style="text-align: right;">
-              <div class="sign-line" style="margin-left: auto;">
-                <strong>For Unique Delta Force Security Services Pvt. Ltd.</strong><br>
-                <span style="color: #64748b;">Authorized Signatory / HR Operations</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </body>
-      </html>
-    `);
-    printWin.document.close();
-  };
+  const canPromote = isSuperAdmin || effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_ACTION_PROMOTE) || hasPermission(Permission.EMPLOYEES_EDIT_PROFILE) || hasPermission(Permission.EMPLOYEES_MANAGE_DEPLOYMENTS);
 
   const hasPermission = useCallback((permission: Permission) => {
     if (isSuperAdmin) return true;
@@ -561,7 +193,6 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
   }, [isSuperAdmin, authUser, userRole]);
 
   const hasViewScopeAll = effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_VIEW_SCOPE_ALL);
-  const canPromote = isSuperAdmin || effectiveIsSuperAdmin || hasPermission(Permission.EMPLOYEES_ACTION_PROMOTE) || hasPermission(Permission.EMPLOYEES_EDIT_PROFILE) || hasPermission(Permission.EMPLOYEES_MANAGE_DEPLOYMENTS);
 
   // Auth Management State
   const [isAuthUpdating, setIsAuthUpdating] = useState(false);
@@ -624,7 +255,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
       try {
         const parsed = JSON.parse(saved);
         setUserVisibleColumns(new Set(parsed));
-      } catch(e) {}
+      } catch (e) { }
     }
   }, []);
 
@@ -660,13 +291,13 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
     if (isFieldHiddenByRbac(fieldId)) {
       return false;
     }
-    
+
     // 3. User Preference Check
     // If user has customized columns, use their preferences
     if (userVisibleColumns.size > 0) {
       return userVisibleColumns.has(fieldId);
     }
-    
+
     return true;
   }, [isFieldHiddenByRbac, userVisibleColumns, hasPermission]);
 
@@ -680,7 +311,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
         newJoiningDateValue,
         updateOriginalJoinDate
       );
-      
+
       const isoDate = new Date(newJoiningDateValue).toISOString();
       setManagementTarget(prev => {
         if (!prev) return null;
@@ -783,7 +414,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
   React.useEffect(() => {
     getEmployeeStatsCounts(hasViewScopeAll ? undefined : (effectiveAllowedSiteIds || [])).then(counts => {
       setCompanyStats(counts);
-    }).catch(() => {});
+    }).catch(() => { });
   }, [hasViewScopeAll, effectiveAllowedSiteIds]);
 
   // Build a flat list of all possible dynamic fields
@@ -913,8 +544,8 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
       const unitField = allFormFields.find(f => f && f.label && (f.label.toLowerCase().includes('unit') || f.label.toLowerCase().includes('facility')));
       const unit = unitField ? (data[unitField.id] || '').toLowerCase() : '';
       const selectedSiteObj = safeSites.find(s => s.id === selectedSite || s.name === selectedSite);
-      const matchesSite = selectedSite === 'ALL' || 
-        emp.currentSiteId === selectedSite || 
+      const matchesSite = selectedSite === 'ALL' ||
+        emp.currentSiteId === selectedSite ||
         (selectedSiteObj && emp.currentSiteId === selectedSiteObj.id) ||
         (selectedSiteObj && (emp.siteName || '').toLowerCase() === selectedSiteObj.name.toLowerCase()) ||
         (selectedSiteObj && unit === selectedSiteObj.name.toLowerCase()) ||
@@ -926,16 +557,16 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
         const strVal = String(filterVal || '');
         if (!strVal || strVal.trim() === '') continue;
         const q = strVal.toLowerCase().trim();
-        
+
         let valToMatch = '';
         if (colId === 'name') valToMatch = name;
         else if (colId === 'employeeId') valToMatch = id;
         else if (colId === 'status') {
-           const isActive = !((emp as any).isRelieved || (emp as any).isBlocked);
-           valToMatch = isActive ? 'active' : 'relieved';
+          const isActive = !((emp as any).isRelieved || (emp as any).isBlocked);
+          valToMatch = isActive ? 'active' : 'relieved';
         }
         else if (colId === 'auth') {
-           valToMatch = ((emp as any).authProvider === 'google' ? 'google' : 'manual');
+          valToMatch = ((emp as any).authProvider === 'google' ? 'google' : 'manual');
         }
         else if (colId === 'siteName') valToMatch = (emp.siteName || '').toLowerCase();
         else if (colId === 'recruitedByName') valToMatch = (emp.recruitedByName || '').toLowerCase();
@@ -1056,6 +687,137 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
     }
   };
 
+  // Promotion Handlers & Available Cadres
+  const availableDesignations = useMemo(() => {
+    const set = new Set<string>();
+    if (portalConfig?.designations && Array.isArray(portalConfig.designations)) {
+      portalConfig.designations.forEach(d => { if (d) set.add(d); });
+    }
+    const targetSiteId = promoteSiteId || (promoteTarget as any)?.currentSiteId || (promoteTarget as any)?.siteId;
+    const siteObj = safeSites.find(s => s.id === targetSiteId);
+    if (siteObj?.allowedDesignations && Array.isArray(siteObj.allowedDesignations)) {
+      siteObj.allowedDesignations.forEach(d => { if (d) set.add(d); });
+    }
+    const defaults = [
+      'Security Guard',
+      'Head Guard',
+      'Lady Security Guard',
+      'Gunman',
+      'Security Supervisor',
+      'Field Officer',
+      'Assistant Security Officer',
+      'Security Officer',
+      'Site Incharge',
+      'Operations Manager'
+    ];
+    defaults.forEach(d => set.add(d));
+    return Array.from(set);
+  }, [portalConfig, promoteSiteId, promoteTarget, safeSites]);
+
+  const openPromoteModal = useCallback((emp: SubmittedFormData) => {
+    setPromoteTarget(emp);
+    setPromoteNewDesignation('');
+    setPromoteCustomDesignation('');
+    setPromoteEffectiveDate(new Date().toISOString().split('T')[0]);
+    setPromoteSiteId((emp as any).currentSiteId || (emp as any).siteId || '');
+    setPromoteRefNo(`UDF/PRM/${new Date().getFullYear()}/${Math.random().toString(36).substring(2, 7).toUpperCase()}`);
+    setPromoteRemarks('');
+    setIsPromoteModalOpen(true);
+  }, []);
+
+  const handleConfirmPromotion = async () => {
+    if (!promoteTarget) return;
+    const finalDesignation = (promoteNewDesignation === '__CUSTOM__' ? promoteCustomDesignation : promoteNewDesignation).trim();
+    if (!finalDesignation) {
+      alert("Please select or enter the new designation.");
+      return;
+    }
+    const currentDesig = (promoteTarget as any).designation || (promoteTarget as any).profileData?.designation || (promoteTarget.data as any)?.designation || 'Staff';
+    if (finalDesignation === currentDesig) {
+      alert(`The employee is already assigned the designation "${currentDesig}". Please choose a different designation.`);
+      return;
+    }
+    const targetSiteObj = safeSites.find(s => s.id === promoteSiteId);
+    const resolvedSiteName = targetSiteObj ? targetSiteObj.name : undefined;
+
+    setIsPromoting(true);
+    try {
+      const record = await promoteEmployee({
+        employeeId: promoteTarget.employeeId || promoteTarget.id,
+        newDesignation: finalDesignation,
+        effectiveDate: promoteEffectiveDate,
+        newSiteId: promoteSiteId || undefined,
+        newSiteName: resolvedSiteName,
+        referenceNo: promoteRefNo,
+        remarks: promoteRemarks,
+        promotedBy: authUser?.name || authUser?.id || 'Admin'
+      });
+
+      // Update local paginated list
+      setPaginatedData(prev => prev.map(item => {
+        if (item.id === promoteTarget.id || item.employeeId === promoteTarget.employeeId) {
+          const updatedHistory = [...((item as any).promotionHistory || []), record];
+          return {
+            ...item,
+            designation: finalDesignation,
+            profileData: {
+              ...(item.profileData || {}),
+              designation: finalDesignation
+            },
+            currentSiteId: promoteSiteId || (item as any).currentSiteId,
+            siteName: resolvedSiteName || item.siteName,
+            promotionHistory: updatedHistory,
+            lastPromotionDate: promoteEffectiveDate
+          } as any;
+        }
+        return item;
+      }));
+
+      // Update management target if open
+      if (managementTarget && (managementTarget.id === promoteTarget.id || managementTarget.employeeId === promoteTarget.employeeId)) {
+        setManagementTarget(prev => prev ? {
+          ...prev,
+          designation: finalDesignation,
+          profileData: {
+            ...(prev.profileData || {}),
+            designation: finalDesignation
+          },
+          currentSiteId: promoteSiteId || (prev as any).currentSiteId,
+          siteName: resolvedSiteName || prev.siteName,
+          promotionHistory: [...((prev as any).promotionHistory || []), record],
+          lastPromotionDate: promoteEffectiveDate
+        } as any : null);
+      }
+
+      alert(`Successfully promoted ${promoteTarget.applicantName || promoteTarget.employeeId} to "${finalDesignation}"!`);
+      setIsPromoteModalOpen(false);
+    } catch (err: any) {
+      console.error("[handleConfirmPromotion] Error:", err);
+      alert(`Promotion Failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsPromoting(false);
+    }
+  };
+
+  const handlePrintPromotionLetter = () => {
+    if (!promoteTarget) return;
+    const finalDesignation = (promoteNewDesignation === '__CUSTOM__' ? promoteCustomDesignation : promoteNewDesignation).trim() || 'New Designation';
+    const currentDesig = (promoteTarget as any).designation || (promoteTarget as any).profileData?.designation || (promoteTarget.data as any)?.designation || 'Staff';
+    const targetSiteObj = safeSites.find(s => s.id === promoteSiteId);
+    const resolvedSiteName = targetSiteObj ? targetSiteObj.name : (promoteTarget.siteName || 'Designated Deployment Site');
+
+    printPromotionLetter({
+      empName: promoteTarget.applicantName || 'Employee',
+      empId: promoteTarget.employeeId || promoteTarget.id,
+      currentDesig,
+      finalDesignation,
+      effectiveDate: promoteEffectiveDate,
+      resolvedSiteName,
+      refNumber: promoteRefNo || `UDF/PRM/${new Date().getFullYear()}/001`,
+      remarks: promoteRemarks
+    });
+  };
+
   return (
     <div className="space-y-6">
       {error && (
@@ -1111,11 +873,10 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                 variant="outline"
                 size="sm"
                 onClick={() => setShowGlobalSearch(!showGlobalSearch)}
-                className={`flex items-center h-9 px-4 rounded-xl transition-all duration-200 border shadow-sm ${
-                  showGlobalSearch 
-                    ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700' 
-                    : 'bg-white text-slate-600 border-slate-200 hover:border-blue-400 hover:text-blue-600'
-                }`}
+                className={`flex items-center h-9 px-4 rounded-xl transition-all duration-200 border shadow-sm ${showGlobalSearch
+                  ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+                  : 'bg-white text-slate-600 border-slate-200 hover:border-blue-400 hover:text-blue-600'
+                  }`}
               >
                 <Search size={16} className={`mr-2 ${showGlobalSearch ? 'text-white' : 'text-slate-400'}`} />
                 <span className="font-black uppercase tracking-tight text-[11px]">Database Search</span>
@@ -1184,9 +945,9 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
               </select>
             </div>
             {(searchTerm || selectedSite !== 'ALL') && (
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   setSearchTerm('');
                   setSelectedSite('ALL');
@@ -1305,10 +1066,10 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                       {canDelete && (
                         <td className="px-4 py-4 whitespace-nowrap text-center">
                           <input
-                             type="checkbox"
-                             className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                             checked={selectedIds.has(emp.id)}
-                             onChange={() => handleToggleSelect(emp.id)}
+                            type="checkbox"
+                            className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            checked={selectedIds.has(emp.id)}
+                            onChange={() => handleToggleSelect(emp.id)}
                           />
                         </td>
                       )}
@@ -1426,7 +1187,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                         let valPath = typeof value === 'object' && value !== null && 'storagePath' in value
                           ? (value as any).storagePath
                           : (typeof value === 'string' ? value : null);
-                        
+
                         return (
                           <td key={field.id} className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                             {field.type === FieldType.FILE_UPLOAD && valPath ? (
@@ -2101,53 +1862,53 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                                   <ShieldHalf size={12} className="mr-1.5" /> Library IDs (Validated)
                                 </label>
                                 <div className="space-y-4 bg-blue-50/30 p-4 rounded-xl border border-blue-100/50">
-                                    {uniqueRequiredIdIds.map(id => {
-                                      const def = (portalConfig?.clientIdDefinitions || []).find(d => d.id === id);
-                                      if (!def) return null;
-                                      
-                                      const value = editingClientIds[id] || '';
-                                      
-                                      // If disabled and empty, don't show it for editing OR viewing
-                                      if (def.isDisabled && !value) return null;
-                                      
-                                      // Validate
-                                      let isValid = true;
-                                      if (def.pattern) isValid = new RegExp(def.pattern).test(value);
-                                      if (def.minLength && value.length < def.minLength) isValid = false;
-                                      if (def.maxLength && value.length > def.maxLength) isValid = false;
-                                      
-                                      const error = value && !isValid ? (
-                                        def.patternMessage || 
-                                        (def.minLength && value.length < def.minLength ? `Min ${def.minLength} chars` : '') ||
-                                        (def.maxLength && value.length > def.maxLength ? `Max ${def.maxLength} chars` : '') ||
-                                        'Invalid format'
-                                      ) : undefined;
+                                  {uniqueRequiredIdIds.map(id => {
+                                    const def = (portalConfig?.clientIdDefinitions || []).find(d => d.id === id);
+                                    if (!def) return null;
 
-                                      return (
-                                        <div key={id} className="relative">
-                                          <Input
-                                            label={`${def.name}${def.isDisabled ? ' (Disabled)' : ''}`}
-                                            value={value}
-                                            onChange={e => {
-                                              let val = e.target.value;
-                                              if (def.fieldType === 'uppercase') val = val.toUpperCase();
-                                              if (def.fieldType === 'number') val = val.replace(/[^0-9]/g, '');
-                                              if (def.maxLength && val.length > def.maxLength) return;
-                                              setEditingClientIds(prev => ({ ...prev, [id]: val }));
-                                            }}
-                                            placeholder={`Enter ${def.name}...`}
-                                            error={error}
-                                            className={value && isValid ? 'border-green-200 bg-green-50/10' : ''}
-                                          />
-                                          {def.description && <p className="text-[10px] text-gray-400 mt-1 ml-1 leading-tight">{def.description}</p>}
-                                        </div>
-                                      );
-                                    })}
-                            </div>
-                          </div>
-                        )}
+                                    const value = editingClientIds[id] || '';
 
-                        <div className="pt-2">
+                                    // If disabled and empty, don't show it for editing OR viewing
+                                    if (def.isDisabled && !value) return null;
+
+                                    // Validate
+                                    let isValid = true;
+                                    if (def.pattern) isValid = new RegExp(def.pattern).test(value);
+                                    if (def.minLength && value.length < def.minLength) isValid = false;
+                                    if (def.maxLength && value.length > def.maxLength) isValid = false;
+
+                                    const error = value && !isValid ? (
+                                      def.patternMessage ||
+                                      (def.minLength && value.length < def.minLength ? `Min ${def.minLength} chars` : '') ||
+                                      (def.maxLength && value.length > def.maxLength ? `Max ${def.maxLength} chars` : '') ||
+                                      'Invalid format'
+                                    ) : undefined;
+
+                                    return (
+                                      <div key={id} className="relative">
+                                        <Input
+                                          label={`${def.name}${def.isDisabled ? ' (Disabled)' : ''}`}
+                                          value={value}
+                                          onChange={e => {
+                                            let val = e.target.value;
+                                            if (def.fieldType === 'uppercase') val = val.toUpperCase();
+                                            if (def.fieldType === 'number') val = val.replace(/[^0-9]/g, '');
+                                            if (def.maxLength && val.length > def.maxLength) return;
+                                            setEditingClientIds(prev => ({ ...prev, [id]: val }));
+                                          }}
+                                          placeholder={`Enter ${def.name}...`}
+                                          error={error}
+                                          className={value && isValid ? 'border-green-200 bg-green-50/10' : ''}
+                                        />
+                                        {def.description && <p className="text-[10px] text-gray-400 mt-1 ml-1 leading-tight">{def.description}</p>}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="pt-2">
                               <Button
                                 variant="primary"
                                 className="w-full bg-blue-600 font-bold"
@@ -2157,14 +1918,14 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                                   setIsSavingClientIds(true);
                                   try {
                                     await updateEmployeeClientIds(managementTarget.employeeId, editingClientIds);
-                                    
+
                                     // Update local state
-                                    setPaginatedData(prev => prev.map(emp => 
-                                      emp.id === managementTarget.id 
+                                    setPaginatedData(prev => prev.map(emp =>
+                                      emp.id === managementTarget.id
                                         ? { ...emp, clientIds: editingClientIds } as any
                                         : emp
                                     ));
-                                    
+
                                     alert("Client IDs saved successfully.");
                                   } catch (err: any) {
                                     alert("Error saving IDs: " + err.message);
@@ -2614,7 +2375,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
               </div>
               <button onClick={() => setIsColumnSettingsOpen(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"><X size={18} /></button>
             </div>
-            
+
             <div className="p-4 border-b border-gray-100 flex gap-2">
               <Button variant="secondary" size="sm" className="flex-1 text-[10px] font-black uppercase tracking-widest" onClick={() => {
                 setUserVisibleColumns(new Set());
@@ -2635,7 +2396,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                 { id: 'joiningDate', label: 'Joined Date' },
                 { id: 'recruitedByName', label: 'Referred By' }
               ].map(col => (
-               <div key={col.id} className="flex items-center">
+                <div key={col.id} className="flex items-center">
                   <input
                     type="checkbox"
                     id={`col-${col.id}`}
@@ -2644,8 +2405,8 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                       if (userVisibleColumns.size === 0) {
                         const allActiveIds = ['name', 'employeeId', 'auth', 'siteName', 'joiningDate', 'recruitedByName', ...allFormFields.map(f => f.id)];
                         const newSet = new Set(allActiveIds.filter(id => {
-                            if (isFieldHiddenByRbac(id)) return false;
-                            return true;
+                          if (isFieldHiddenByRbac(id)) return false;
+                          return true;
                         }));
                         newSet.delete(col.id);
                         setUserVisibleColumns(newSet);
@@ -2672,8 +2433,8 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                       if (userVisibleColumns.size === 0) {
                         const allActiveIds = ['name', 'employeeId', 'auth', 'siteName', 'joiningDate', 'recruitedByName', ...allFormFields.map(f => f.id)];
                         const newSet = new Set(allActiveIds.filter(id => {
-                            if (isFieldHiddenByRbac(id)) return false;
-                            return true;
+                          if (isFieldHiddenByRbac(id)) return false;
+                          return true;
                         }));
                         newSet.delete(field.id);
                         setUserVisibleColumns(newSet);
@@ -2689,7 +2450,7 @@ const AdminMasterEmployeeListPage: React.FC<AdminMasterEmployeeListPageProps> = 
                 </div>
               ))}
             </div>
-            
+
             <div className="p-4 border-t border-gray-100 bg-gray-50 text-center">
               <p className="text-[10px] text-gray-400 font-bold"><Info size={10} className="inline mr-1" /> Preferences are saved automatically to your device.</p>
             </div>
