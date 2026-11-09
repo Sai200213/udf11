@@ -201,7 +201,7 @@ service cloud.firestore {
         resource.data.get('linkedUid', '') == request.auth.uid
       ));
       allow update: if canAdminManageEmployees() 
-        || (isAuthenticated() && (request.auth.uid == userId || resource.data.get('uid', '') == request.auth.uid) && (
+        || (isSelfEmployee(userId, resource.data) && (
             (
               request.resource.data.diff(resource.data).affectedKeys().hasOnly(['profileStatus', 'lastUpdated', 'needsProfileCompletion', 'profilePhotoURL']) &&
               (request.resource.data.profileStatus == 'waiting_for_admin' || request.resource.data.profilePhotoURL != null)
@@ -414,7 +414,12 @@ service cloud.firestore {
 
     // ─── Leave Balances ──────────────────────────────────────────────────────
     match /leave_balances/{id} {
-      allow read: if isAdmin() || (isAuthenticated() && (id == request.auth.uid || resource.data.employeeId == request.auth.uid));
+      allow read: if isAdmin() || (isAuthenticated() && (
+        id == request.auth.uid || 
+        resource.data.employeeId == request.auth.uid || 
+        isOwnerOfPortalId(id) || 
+        isOwnerOfPortalId(resource.data.employeeId)
+      ));
       allow write: if isAdmin();
     }
 
@@ -580,7 +585,11 @@ service cloud.firestore {
 
     // ─── Gamification Logs (Immutable Ledger - Server-Enforced) ──────────────
     match /gamification_logs/{id} {
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || 
+        isOwnerOfPortalId(resource.data.userId) || 
+        isAdmin()
+      );
       allow create, update, delete: if false;
     }
   }

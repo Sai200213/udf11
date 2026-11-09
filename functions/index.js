@@ -2160,6 +2160,9 @@ exports.moveStorageFolder = secureOnCall(async (request) => {
     if (!request.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'The function must be called while authenticated.');
     }
+    if (request.auth.token && request.auth.token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
 
     const { sourcePath, destinationPath } = request.data;
     if (!sourcePath || !destinationPath) {
@@ -2281,6 +2284,9 @@ exports.moveStorageFolder = secureOnCall(async (request) => {
 exports.deleteStoragePath = secureOnCall(async (request) => {
     if (!request.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'User must be logged in.');
+    }
+    if (request.auth.token && request.auth.token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
     }
 
     const { storagePath, isFolder } = request.data || {};
@@ -2434,6 +2440,9 @@ exports.deleteStoragePath = secureOnCall(async (request) => {
 exports.getStorageFolderSizeServer = secureOnCall(async (request) => {
     if (!request.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'User must be logged in.');
+    }
+    if (request.auth.token && request.auth.token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
     }
 
     const { folderPath } = request.data || {};
@@ -2983,16 +2992,29 @@ exports.getSystemMetrics = secureOnCall(async (request) => {
     if (!request.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'Access denied.');
     }
+    if (request.auth.token && request.auth.token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
 
     const db = admin.firestore();
     const callerUid = request.auth.uid;
+    const token = request.auth.token || {};
 
     try {
         // Authenticate admin check
-        const adminSnap = await db.collection('users').doc(callerUid).get();
-        const staffSnap = await db.collection('staff_accounts').doc(callerUid).get();
+        let isAdmin = token.isAdmin === true || token.isSuperAdmin === true || token.roleId === 'role-super-admin';
+        if (!isAdmin) {
+            const [adminSnap, staffSnap] = await Promise.all([
+                db.collection('users').doc(callerUid).get(),
+                db.collection('staff_accounts').doc(callerUid).get()
+            ]);
+            const adminDoc = adminSnap.exists ? adminSnap.data() : null;
+            const staffDoc = staffSnap.exists ? staffSnap.data() : null;
+            const isSuperFromAdmin = adminDoc && adminDoc.isDisabled !== true && adminDoc.isActive !== false && (adminDoc.roleId === 'role-super-admin' || adminDoc.type === 'Admin');
+            const isSuperFromStaff = staffDoc && staffDoc.isDisabled !== true && staffDoc.isActive !== false && staffDoc.roleId === 'role-super-admin';
+            isAdmin = !!(isSuperFromAdmin || isSuperFromStaff);
+        }
         
-        const isAdmin = adminSnap.exists || (staffSnap.exists && staffSnap.data().roleId === 'role-super-admin');
         if (!isAdmin) {
             throw new functions.https.HttpsError('permission-denied', 'Access denied. Administrator privileges required.');
         }
@@ -3834,6 +3856,9 @@ exports.refreshAdminClaims = secureOnCall(async (request) => {
     if (!request.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated.');
     }
+    if (request.auth.token && request.auth.token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
 
     const callerUid = request.auth.uid;
     const { targetUid } = request.data || {};
@@ -3845,6 +3870,16 @@ exports.refreshAdminClaims = secureOnCall(async (request) => {
     const isSuperAdmin = request.auth.token && request.auth.token.isSuperAdmin === true;
     if (!isSuperAdmin && callerUid !== targetUid) {
         throw new functions.https.HttpsError('permission-denied', 'Only SuperAdmins can refresh another user\'s claims.');
+    }
+
+    const db = admin.firestore();
+    const [callerStaff, callerUser] = await Promise.all([
+        db.collection('staff_accounts').doc(callerUid).get(),
+        db.collection('users').doc(callerUid).get()
+    ]);
+    const callerDoc = callerStaff.exists ? callerStaff.data() : (callerUser.exists ? callerUser.data() : null);
+    if (!callerDoc || callerDoc.isDisabled === true || callerDoc.isActive === false) {
+        throw new functions.https.HttpsError('permission-denied', 'Only active staff can refresh admin claims.');
     }
 
     try {
@@ -4614,6 +4649,9 @@ exports.processRequestReviewServer = secureOnCall(async (request) => {
         ]);
         const staffDoc = saSnap.exists ? saSnap.data() : (stSnap.exists ? stSnap.data() : (uSnap.exists ? uSnap.data() : null));
         if (staffDoc) {
+            if (staffDoc.isDisabled === true || staffDoc.isActive === false) {
+                throw new functions.https.HttpsError('permission-denied', 'Account is disabled or inactive.');
+            }
             callerName = callerName || staffDoc.name || staffDoc.fullName || staffDoc.displayName || 'Admin';
             callerRoleId = callerRoleId || staffDoc.roleId || 'admin';
             if (Array.isArray(staffDoc.sitesManaged)) {
@@ -5025,6 +5063,9 @@ exports.approveOnboardingServer = secureOnCall(async (request) => {
     // Verify permission: SUBMISSIONS_APPROVE or SuperAdmin
     if (!isSuperAdmin && !permissions.includes('SUBMISSIONS_APPROVE')) {
         const saSnap = await db.collection('staff_accounts').doc(uid).get();
+        if (saSnap.exists && (saSnap.data().isDisabled === true || saSnap.data().isActive === false)) {
+            throw new functions.https.HttpsError('permission-denied', 'Account is disabled or inactive.');
+        }
         const roleId = saSnap.exists ? saSnap.data().roleId : null;
         let allowed = roleId === 'role-super-admin';
         if (!allowed && roleId) {
@@ -5356,7 +5397,21 @@ exports.relieveEmployeeServer = secureOnCall(async (request) => {
 
     // Verify permission: RESIGNATIONS_APPROVE, DELETE_EMPLOYEE, or SuperAdmin
     if (!isSuperAdmin && !permissions.includes('RESIGNATIONS_APPROVE') && !permissions.includes('DELETE_EMPLOYEE')) {
-        throw new functions.https.HttpsError('permission-denied', 'Missing permission to relieve employees.');
+        const saSnap = await db.collection('staff_accounts').doc(uid).get();
+        if (saSnap.exists && (saSnap.data().isDisabled === true || saSnap.data().isActive === false)) {
+            throw new functions.https.HttpsError('permission-denied', 'Account is disabled or inactive.');
+        }
+        const roleId = saSnap.exists ? saSnap.data().roleId : null;
+        let allowed = roleId === 'role-super-admin';
+        if (!allowed && roleId) {
+            const roleSnap = await db.collection('roles').doc(roleId).get();
+            if (roleSnap.exists && Array.isArray(roleSnap.data().permissions)) {
+                allowed = roleSnap.data().permissions.includes('RESIGNATIONS_APPROVE') || roleSnap.data().permissions.includes('DELETE_EMPLOYEE');
+            }
+        }
+        if (!allowed) {
+            throw new functions.https.HttpsError('permission-denied', 'Missing permission to relieve employees.');
+        }
     }
 
     // Resolve employee document
@@ -5918,7 +5973,7 @@ const GOOGLE_FORM_MAPPING = require('./googleFormMapping');
 
 const ROOT_DRIVE_FOLDER_ID = "1XuFLT5v5s1ZSdugKr1XzT0AdYkL-QgBX";
 const APPS_SCRIPT_FALLBACK_URL = process.env.APPS_SCRIPT_FALLBACK_URL || "https://script.google.com/macros/s/AKfycbz7dCyY67bQuB9OWdwZ8UvVK9EY1XOwtkpY6UKQks0MyHFZV4drG5L6eZK5HKPO0vI/exec";
-const APPS_SCRIPT_SERVER_SECRET = process.env.APPS_SCRIPT_SERVER_SECRET || 'server_admin';
+const APPS_SCRIPT_SERVER_SECRET = process.env.APPS_SCRIPT_SERVER_SECRET || '';
 const DRIVE_ROOT_FOLDERS = {
     PENDING: 'Pending Employees',
     ACTIVE: 'Active Employees',
@@ -6026,6 +6081,10 @@ async function uploadFileViaAppsScriptServer(storagePath, targetName, uniqueId, 
     const [buffer] = await file.download();
     const base64 = buffer.toString('base64');
     const fileName = storagePath.split('/').pop() || 'document.pdf';
+
+    if (!APPS_SCRIPT_SERVER_SECRET) {
+        throw new Error('APPS_SCRIPT_SERVER_SECRET is not configured.');
+    }
 
     const response = await fetch(APPS_SCRIPT_FALLBACK_URL, {
         method: 'POST',
@@ -6390,6 +6449,11 @@ async function appendSubmissionToSheetsServer(recordData, formData, driveFolderU
         fields.push({ title: 'Email ID', value: email });
     }
 
+    if (!APPS_SCRIPT_SERVER_SECRET) {
+        console.warn(`[CLOUD-7] APPS_SCRIPT_SERVER_SECRET is not configured.`);
+        return 'form_sync_not_configured';
+    }
+
     try {
         const res = await fetch(APPS_SCRIPT_FALLBACK_URL, {
             method: 'POST',
@@ -6429,6 +6493,9 @@ exports.syncEmployeeToGoogleDriveServer = secureOnCall({ timeoutSeconds: 300, me
             db.collection('staff_accounts').doc(request.auth.uid).get()
         ]);
         const prof = (sSnap.exists ? sSnap.data() : (uSnap.exists ? uSnap.data() : null)) || {};
+        if (prof.isDisabled === true || prof.isActive === false) {
+            throw new functions.https.HttpsError('permission-denied', 'Account is disabled or inactive.');
+        }
         if (prof.roleId === 'role-super-admin' || prof.type === 'Admin' || (Array.isArray(prof.roles) && prof.roles.includes('super-admin'))) {
             isSuperAdmin = true;
         }
@@ -6470,6 +6537,9 @@ exports.syncSubmissionToSheetsServer = secureOnCall({ timeoutSeconds: 120 }, asy
             db.collection('staff_accounts').doc(request.auth.uid).get()
         ]);
         const prof = (sSnap.exists ? sSnap.data() : (uSnap.exists ? uSnap.data() : null)) || {};
+        if (prof.isDisabled === true || prof.isActive === false) {
+            throw new functions.https.HttpsError('permission-denied', 'Account is disabled or inactive.');
+        }
         if (prof.roleId === 'role-super-admin' || prof.type === 'Admin' || (Array.isArray(prof.roles) && prof.roles.includes('super-admin'))) {
             isSuperAdmin = true;
         }

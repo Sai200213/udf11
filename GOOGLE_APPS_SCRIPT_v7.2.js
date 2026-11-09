@@ -43,8 +43,8 @@ function verifyFirebaseToken(idToken) {
   }
   
   // Allow server-side Cloud Function calls (server-to-server secure channel)
-  const scriptSecret = PropertiesService.getScriptProperties().getProperty('APPS_SCRIPT_SERVER_SECRET') || "server_admin";
-  if (idToken === scriptSecret || idToken === "server_admin") {
+  const scriptSecret = PropertiesService.getScriptProperties().getProperty('APPS_SCRIPT_SERVER_SECRET');
+  if (scriptSecret && scriptSecret.length >= 32 && idToken === scriptSecret) {
     return { isValid: true, uid: "cloud_function_server", isSuperAdmin: true };
   }
 
@@ -80,8 +80,13 @@ function verifyViaApi(idToken) {
       });
       if (firestoreResponse.getResponseCode() === 200) {
         var userDoc = JSON.parse(firestoreResponse.getContentText());
+        var isDisabled = userDoc.fields && userDoc.fields.isDisabled && userDoc.fields.isDisabled.booleanValue === true;
+        var isActive = userDoc.fields && userDoc.fields.isActive ? userDoc.fields.isActive.booleanValue !== false : true;
+        if (isDisabled || !isActive) {
+          return { isValid: false, error: "ACCOUNT_DISABLED" };
+        }
         var roleId = userDoc.fields && userDoc.fields.roleId && userDoc.fields.roleId.stringValue;
-        isSuperAdmin = (roleId === 'role-super-admin');
+        isSuperAdmin = (!isDisabled && roleId === 'role-super-admin');
       }
     } catch (err) {}
     
