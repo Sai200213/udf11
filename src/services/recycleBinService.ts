@@ -2,7 +2,8 @@ import {
   collection, doc, getDoc, getDocs, setDoc, deleteDoc, 
   updateDoc, query, orderBy, onSnapshot, serverTimestamp 
 } from 'firebase/firestore';
-import { db, auth } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
+import { db, auth, functions } from '../firebase/config';
 import { SETTINGS_COLLECTION } from './adminService';
 import { Site } from '../../types';
 import { resolveEmployeeDoc } from './employeeService';
@@ -65,6 +66,19 @@ export async function moveToRecycleBin(params: {
  * Restore an item from the Recycle Bin back to its original state and collection.
  */
 export async function restoreFromRecycleBin(recycleBinItemId: string): Promise<{ success: boolean; message: string }> {
+  try {
+    const fn = httpsCallable<{ recycleBinItemId: string }, { success: boolean; message: string }>(
+      functions,
+      'restoreRecycleBinServer'
+    );
+    const res = await fn({ recycleBinItemId });
+    if (res.data && res.data.success) {
+      return res.data;
+    }
+  } catch (serverErr: any) {
+    console.warn('[RECYCLE_BIN] Server restore failed, falling back to local restore:', serverErr);
+  }
+
   const binDocRef = doc(db, RECYCLE_BIN_COLLECTION, recycleBinItemId);
   const binSnap = await getDoc(binDocRef);
 

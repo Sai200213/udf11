@@ -1,6 +1,7 @@
 import { Site, FormSection, SubmissionStatus, FieldType, FormField } from '../../types';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '../firebase/config';
+import { db, functions } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
 import { collection, doc, getDoc, setDoc, writeBatch, serverTimestamp, getDocs, query, where } from 'firebase/firestore';
 import { resolveLocation, validateBulkImportLocations } from './subUnitUtils';
 import { hashCandidatePassword } from '../services/employeeService';
@@ -784,6 +785,23 @@ export const bulkImportEmployees = async (
             return result;
         }
         result.warnings = validation.warnings.map(w => ({ row: 0, warning: w }));
+    }
+
+    // Attempt server-side bulk import for fast, reliable batch commit
+    try {
+        const bulkImportFn = httpsCallable<
+            { rows: BulkImportRow[]; options: any },
+            BulkImportResult
+        >(functions, 'bulkImportEmployeesServer');
+        const res = await bulkImportFn({
+            rows,
+            options: { generateIds, overwriteMode, idPrefix }
+        });
+        if (res.data && res.data.success) {
+            return res.data;
+        }
+    } catch (serverErr: any) {
+        console.warn('[BULK_IMPORT] Server bulk import failed, falling back to client execution:', serverErr);
     }
 
     // Find common form field IDs

@@ -2975,6 +2975,19 @@ export interface PromoteEmployeeParams {
 }
 
 export const promoteEmployee = async (params: PromoteEmployeeParams): Promise<PromotionRecord> => {
+    try {
+        const fn = httpsCallable<PromoteEmployeeParams, { success: boolean; promotionRecord: PromotionRecord }>(
+            functions,
+            'promoteEmployeeServer'
+        );
+        const res = await fn(params);
+        if (res.data && res.data.promotionRecord) {
+            return res.data.promotionRecord;
+        }
+    } catch (err: any) {
+        log.warn("[PROMOTE] Server promotion failed, falling back to direct write:", err);
+    }
+
     const { employeeId, newDesignation, effectiveDate, newSiteId, newSiteName, referenceNo, remarks, promotedBy } = params;
     const resolved = await resolveEmployeeDoc(employeeId);
     if (!resolved) throw new Error("Employee not found");
@@ -3653,6 +3666,18 @@ export const permanentDeleteEmployee = async (
     employeeName?: string,
     deep: boolean = true
 ) => {
+    try {
+        const fn = httpsCallable<{ employeeId: string; employeeName?: string; deep?: boolean }, { success: boolean; deletedRecordsCount: number }>(
+            functions,
+            'permanentDeleteEmployeeServer'
+        );
+        const res = await fn({ employeeId, employeeName, deep });
+        log.log(`[PERMANENT_DELETE] Server deletion complete:`, res.data);
+        return;
+    } catch (serverErr) {
+        log.warn(`[PERMANENT_DELETE] Server function failed, falling back to client cascade:`, serverErr);
+    }
+
     const ctx = await resolveEmployeeFullContext(employeeId);
     const resolvedName = employeeName || ctx.applicantName || 'Unknown';
     const resolvedEmpId = ctx.employeeId || employeeId;

@@ -428,71 +428,15 @@ const AdminSiteManagementPage: React.FC<AdminSiteManagementPageProps> = ({ sites
     setIsDeletingSite(true);
 
     try {
-      const { collection, query, where, getDocs } = await import('firebase/firestore');
-      const { db } = await import('../src/firebase/config');
-
-      // 1. Check active employees assigned
-      const count = getSiteHeadcount(siteToDelete.name);
-      if (count > 0) {
-        onNotify(`Cannot delete "${siteToDelete.name}". It still has ${count} active assigned guards in the client roster.`, 'error');
-        setIsDeleteConfirmOpen(false);
-        setIsDeletingSite(false);
-        return;
-      }
-
-      const empQ = query(collection(db, 'employees'), where('currentSiteId', '==', siteToDelete.id));
-      const empSnap = await getDocs(empQ);
-      if (!empSnap.empty) {
-        onNotify(`Cannot delete "${siteToDelete.name}" because it is actively assigned to ${empSnap.size} employee record(s).`, 'error');
-        setIsDeleteConfirmOpen(false);
-        setIsDeletingSite(false);
-        return;
-      }
-
-      // 2. Check active referral invites
-      const inviteQ = query(
-        collection(db, 'referral_invites'),
-        where('siteId', '==', siteToDelete.id),
-        where('status', '==', 'Active')
+      const { httpsCallable } = await import('firebase/functions');
+      const { functions } = await import('../src/firebase/config');
+      const deleteSiteFn = httpsCallable<{ siteId: string; siteName?: string }, { success: boolean; message: string }>(
+        functions,
+        'deleteSiteServer'
       );
-      const inviteSnap = await getDocs(inviteQ);
-      if (!inviteSnap.empty) {
-        onNotify(`Cannot delete "${siteToDelete.name}" because it is linked to ${inviteSnap.size} active referral invite link(s). Revoke these invites first.`, 'error');
-        setIsDeleteConfirmOpen(false);
-        setIsDeletingSite(false);
-        return;
-      }
+      const res = await deleteSiteFn({ siteId: siteToDelete.id, siteName: siteToDelete.name });
 
-      // 3. Check pending onboarding submissions
-      const subQ1 = query(
-        collection(db, 'onboarding_submissions'),
-        where('siteId', '==', siteToDelete.id)
-      );
-      const subSnap1 = await getDocs(subQ1);
-      const pendingSub1 = subSnap1.docs.filter(d => {
-        const s = d.data().status;
-        return (s === 'Pending' || s === 'Pending Review') && !d.data().deletedAt && !d.data().isDeleted;
-      });
-
-      const subQ2 = query(
-        collection(db, 'onboarding_submissions'),
-        where('formData.52ae217b-2602-4337-a1cd-a1f9bd36a4b0', '==', siteToDelete.name)
-      );
-      const subSnap2 = await getDocs(subQ2);
-      const pendingSub2 = subSnap2.docs.filter(d => {
-        const s = d.data().status;
-        return (s === 'Pending' || s === 'Pending Review') && !d.data().deletedAt && !d.data().isDeleted && !subSnap1.docs.some(d1 => d1.id === d.id);
-      });
-
-      const total = pendingSub1.length + pendingSub2.length;
-      if (total > 0) {
-        onNotify(`Cannot delete "${siteToDelete.name}" because it is linked to ${total} pending onboarding application(s). Resolve or reject these submissions first.`, 'error');
-        setIsDeleteConfirmOpen(false);
-        setIsDeletingSite(false);
-        return;
-      }
-
-      // 4. Clean up Form Builder designation mapping for this site if present in optionsMap
+      // Clean up Form Builder designation mapping for this site if present in optionsMap
       const sourceSections = sections.length > 0 ? sections : defaultFormSections;
       const jobSection = sourceSections.find(s => s.name === "Job Details");
       const designationField = jobSection?.fields.find(f =>
@@ -522,80 +466,23 @@ const AdminSiteManagementPage: React.FC<AdminSiteManagementPageProps> = ({ sites
             }
             return s;
           });
-          await updateFormSections(updatedSections);
-          log.log(`[Delete Site] Successfully purged optionsMap mapping for site "${siteToDelete.name}" in Form Builder Designation field.`);
+          await updateFormSections(updatedSections).catch(() => {});
         } catch (fbErr: any) {
           console.error("Failed to clean up Form Builder optionsMap mapping:", fbErr);
         }
       }
 
-      // Clean up & soft-delete any vacancies linked to this site
-      let associatedVacancies: any[] = [];
-      try {
-        const { getVacancies, deleteVacancy } = await import('../src/services/vacancyService');
-        const allVacancies = await getVacancies();
-        associatedVacancies = allVacancies.filter(v => v.siteId === siteToDelete.id || v.siteName === siteToDelete.name);
-        
-        for (const vac of associatedVacancies) {
-          await moveToRecycleBin({
-            itemType: 'VACANCY',
-            name: `${vac.title || 'Vacancy'} (${siteToDelete.name})`,
-            originalId: vac.id,
-            originalCollection: 'vacancies',
-            data: vac,
-            deletedByUid: isSuperAdmin ? 'super-admin' : 'staff',
-            deletedByName: isSuperAdmin ? 'Super Admin' : 'Staff Admin',
-            metadata: { siteId: siteToDelete.id, siteName: siteToDelete.name }
-          });
-          await deleteVacancy(vac.id);
-        }
-        if (associatedVacancies.length > 0) {
-          log.log(`[Delete Site] Cleaned up & moved ${associatedVacancies.length} linked vacancies to Recycle Bin for site "${siteToDelete.name}".`);
-        }
-      } catch (vErr) {
-        console.error("Failed to clean up associated vacancies:", vErr);
-      }
-
-      // Move to Universal Recycle Bin before removing
-      const binId = await moveToRecycleBin({
-        itemType: 'SITE',
-        name: siteToDelete.name,
-        originalId: siteToDelete.id,
-        originalCollection: 'settings/sites',
-        data: siteToDelete,
-        deletedByUid: isSuperAdmin ? 'super-admin' : 'staff',
-        deletedByName: isSuperAdmin ? 'Super Admin' : 'Staff Admin',
-        metadata: {
-          linkedVacancies: associatedVacancies,
-          linkedVacancyCount: associatedVacancies.length
-        }
-      });
-
-      // Update active sites list
-      const deletedSiteCopy = { ...siteToDelete };
+      // Update active sites list in local state
       const updatedSites = sites.filter(s => s.id !== siteToDelete.id);
       setSites(updatedSites);
-      await saveAllSites(updatedSites);
 
-      if (logAction) {
-        logAction('DELETE', 'SITES', `Moved site "${siteToDelete.name}" to Recycle Bin (${associatedVacancies.length} vacancies also archived)`);
-      }
-      
-      // Trigger Instant 10s Undo Toast
-      showUndoToast({
-        message: `Site "${deletedSiteCopy.name}" moved to Recycle Bin${associatedVacancies.length > 0 ? ` (${associatedVacancies.length} vacancies archived)` : ''}`,
-        recycleBinId: binId,
-        onUndo: () => {
-          setSites(prev => [...prev.filter(s => s.id !== deletedSiteCopy.id), deletedSiteCopy]);
-          saveAllSites([...updatedSites, deletedSiteCopy]).catch(console.error);
-        }
-      });
-
+      onNotify(res.data?.message || `Site "${siteToDelete.name}" successfully moved to Recycle Bin.`, 'success');
       setIsDeleteConfirmOpen(false);
       setSiteToDelete(null);
     } catch (err: any) {
-      console.error("Failed to delete site:", err);
-      onNotify(`Failed to delete site: ${err.message}`, 'error');
+      console.error("Failed to delete site via server:", err);
+      const msg = err.message || err.details || 'Failed to delete site.';
+      onNotify(msg.replace(/^Error:\s*/i, ''), 'error');
     } finally {
       setIsDeletingSite(false);
     }

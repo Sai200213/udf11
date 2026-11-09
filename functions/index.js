@@ -6662,3 +6662,837 @@ exports.getDraftSubmissionSecure = secureOnCall(async (request) => {
     return { id: docSnap.id, data: draftData };
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CLOUD-8: ENTERPRISE OPERATIONS (PERMANENT DELETE, RECYCLE RESTORE, SITE DELETE, PROMOTION, BULK IMPORT)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 1. permanentDeleteEmployeeServer
+ * Cascading permanent deletion of an employee, all linked records across 8 collections,
+ * Cloud Storage files, and Google Drive folders.
+ */
+exports.permanentDeleteEmployeeServer = secureOnCall({ timeoutSeconds: 300, memory: '1GiB' }, async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated to delete employee records.');
+    }
+    const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
+
+    const { employeeId, employeeName, deep } = request.data || {};
+    if (!employeeId || typeof employeeId !== 'string') {
+        throw new functions.https.HttpsError('invalid-argument', 'employeeId is required.');
+    }
+
+    const db = admin.firestore();
+    const uid = request.auth.uid;
+    const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'role-super-admin';
+    const permissions = Array.isArray(token.permissions) ? token.permissions : [];
+
+    // Authorization: SuperAdmin or DELETE_EMPLOYEE / SUBMISSIONS_APPROVE
+    if (!isSuperAdmin && !permissions.includes('DELETE_EMPLOYEE') && !permissions.includes('SUBMISSIONS_APPROVE')) {
+        const saSnap = await db.collection('staff_accounts').doc(uid).get();
+        if (saSnap.exists && (saSnap.data().isDisabled === true || saSnap.data().isActive === false)) {
+            throw new functions.https.HttpsError('permission-denied', 'Account is disabled or inactive.');
+        }
+        const roleId = saSnap.exists ? saSnap.data().roleId : null;
+        let allowed = roleId === 'role-super-admin';
+        if (!allowed && roleId) {
+            const roleSnap = await db.collection('roles').doc(roleId).get();
+            if (roleSnap.exists && Array.isArray(roleSnap.data().permissions)) {
+                allowed = roleSnap.data().permissions.includes('DELETE_EMPLOYEE') || roleSnap.data().permissions.includes('SUBMISSIONS_APPROVE');
+            }
+        }
+        if (!allowed) {
+            throw new functions.https.HttpsError('permission-denied', 'Missing permission to permanently delete employee records.');
+        }
+    }
+
+    // Resolve employee document
+    const empSnap = await resolveEmployeeDocAdmin(db, employeeId);
+    let subSnap = null;
+    if (!empSnap || !empSnap.exists) {
+        subSnap = await resolveSubmissionDocAdmin(db, employeeId, employeeId);
+        if (!subSnap || !subSnap.exists) {
+            throw new functions.https.HttpsError('not-found', `Employee or Submission "${employeeId}" not found.`);
+        }
+    }
+
+    const empData = empSnap && empSnap.exists ? empSnap.data() : {};
+    const subData = subSnap && subSnap.exists ? subSnap.data() : {};
+    const siteId = empData.currentSiteId || subData.siteId || '';
+
+    // Site authority check for non-SuperAdmins
+    if (siteId && !isSuperAdmin) {
+        const hasGlobalScope = permissions.includes('EMPLOYEES_VIEW_SCOPE_ALL') ||
+            permissions.includes('SUBMISSIONS_VIEW_SCOPE_ALL') ||
+            permissions.includes('MANAGE_SITES') ||
+            permissions.includes('MANAGE_ALL_SITES');
+        const sitesManaged = Array.isArray(token.sitesManaged) ? token.sitesManaged : [];
+        if (!hasGlobalScope && !sitesManaged.includes(siteId)) {
+            throw new functions.https.HttpsError('permission-denied', `You do not have management authority for site "${siteId}".`);
+        }
+    }
+
+    // Collect all associated identifiers
+    const allIds = new Set();
+    [employeeId, empSnap?.id, empData.employeeId, empData.portalId, empData.uid, empData.linkedUid, subSnap?.id, subData.employeeId, subData.portalId, subData.uid, subData.linkedUid]
+        .filter(id => id && typeof id === 'string')
+        .forEach(id => allIds.add(id.trim()));
+
+    const idList = Array.from(allIds);
+    const resolvedName = employeeName || empData.applicantName || subData.applicantName || 'Employee';
+
+    // 1. Storage & Drive Deletion if deep !== false
+    if (deep !== false) {
+        try {
+            const bucket = admin.storage().bucket();
+            const storageFolders = new Set();
+            idList.forEach(id => {
+                storageFolders.add(`employees/${id}/`);
+                storageFolders.add(`onboarding/${id}/`);
+                storageFolders.add(`draft_submissions/${id}/`);
+            });
+
+            await Promise.all(Array.from(storageFolders).map(prefix => 
+                bucket.deleteFiles({ prefix, force: true }).catch(err => console.warn(`Storage delete failed for ${prefix}:`, err.message))
+            ));
+        } catch (storageErr) {
+            console.warn(`[permanentDeleteEmployeeServer] Storage deletion non-fatal error:`, storageErr.message);
+        }
+
+        // Drive deletion via fallback if configured
+        if (APPS_SCRIPT_FALLBACK_URL && APPS_SCRIPT_SERVER_SECRET) {
+            try {
+                await fetch(APPS_SCRIPT_FALLBACK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: JSON.stringify({
+                        action: 'delete_folder',
+                        employeeName: resolvedName,
+                        uniqueId: employeeId,
+                        token: APPS_SCRIPT_SERVER_SECRET
+                    })
+                }).catch(() => {});
+            } catch (driveErr) {
+                console.warn(`[permanentDeleteEmployeeServer] Drive delete non-fatal error:`, driveErr.message);
+            }
+        }
+    }
+
+    // 2. Cascading Delete associated request and operational records in batches
+    let totalDeleted = 0;
+    const collectionsToClean = [
+        { name: 'leave_requests', field: 'employeeId' },
+        { name: 'leave_requests', field: 'uid' },
+        { name: 'resignations', field: 'employeeId' },
+        { name: 'resignations', field: 'uid' },
+        { name: 'account_updates', field: 'employeeId' },
+        { name: 'account_updates', field: 'uid' },
+        { name: 'attendance', field: 'userId' },
+        { name: 'attendance', field: 'employeeId' },
+        { name: 'disciplinary_actions', field: 'employeeId' },
+        { name: 'disciplinary_actions', field: 'targetUserId' },
+        { name: 'notifications', field: 'targetUserId' },
+        { name: 'gamification_logs', field: 'userId' },
+        { name: 'user_engagement', directId: true },
+        { name: 'leave_balances', directId: true },
+        { name: 'leave_balances', field: 'employeeId' }
+    ];
+
+    for (const target of collectionsToClean) {
+        if (target.directId) {
+            const batch = db.batch();
+            let count = 0;
+            for (const id of idList) {
+                batch.delete(db.collection(target.name).doc(id));
+                count++;
+            }
+            if (count > 0) {
+                await batch.commit().catch(() => {});
+                totalDeleted += count;
+            }
+        } else {
+            for (const id of idList) {
+                const qSnap = await db.collection(target.name).where(target.field, '==', id).get();
+                if (!qSnap.empty) {
+                    const batch = db.batch();
+                    qSnap.docs.forEach(docSnap => batch.delete(docSnap.ref));
+                    await batch.commit().catch(() => {});
+                    totalDeleted += qSnap.size;
+                }
+            }
+        }
+    }
+
+    // 3. Delete Primary Records
+    const mainBatch = db.batch();
+    for (const id of idList) {
+        mainBatch.delete(db.collection('employees').doc(id));
+        mainBatch.delete(db.collection('onboarding_submissions').doc(id));
+    }
+    await mainBatch.commit().catch(() => {});
+
+    // 4. Server Audit Log
+    await db.collection('audit_logs').add({
+        action: 'PERMANENT_DELETE',
+        category: 'EMPLOYEES',
+        targetId: employeeId,
+        targetName: resolvedName,
+        actorId: uid,
+        actorEmail: token.email || 'Admin',
+        details: `Permanently deleted employee ${resolvedName} (${employeeId}) and ${totalDeleted} associated record(s).`,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+    }).catch(() => {});
+
+    return {
+        success: true,
+        employeeId,
+        resolvedName,
+        deletedRecordsCount: totalDeleted
+    };
+});
+
+/**
+ * 2. restoreRecycleBinServer
+ * Server-enforced restoration of items from Recycle Bin with validation and sanitization.
+ */
+exports.restoreRecycleBinServer = secureOnCall({ timeoutSeconds: 60 }, async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated to restore records.');
+    }
+    const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
+
+    const { recycleBinItemId } = request.data || {};
+    if (!recycleBinItemId || typeof recycleBinItemId !== 'string') {
+        throw new functions.https.HttpsError('invalid-argument', 'recycleBinItemId is required.');
+    }
+
+    const db = admin.firestore();
+    const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'role-super-admin';
+    const permissions = Array.isArray(token.permissions) ? token.permissions : [];
+
+    const binSnap = await db.collection('recycle_bin').doc(recycleBinItemId).get();
+    if (!binSnap.exists) {
+        throw new functions.https.HttpsError('not-found', 'Record not found in Recycle Bin or already restored.');
+    }
+
+    const binItem = binSnap.data() || {};
+    const { itemType, originalId, data, metadata } = binItem;
+
+    // SEC-07: Restoring STAFF or ROLE documents is strictly SuperAdmin only
+    if (['STAFF', 'ROLE'].includes(String(itemType || '').toUpperCase()) && !isSuperAdmin) {
+        throw new functions.https.HttpsError('permission-denied', 'Only SuperAdmin can restore Staff accounts or Roles.');
+    }
+
+    const nowIso = new Date().toISOString();
+
+    switch (String(itemType || '').toUpperCase()) {
+        case 'SITE': {
+            const sitesRef = db.collection('settings').doc('sites');
+            const sitesSnap = await sitesRef.get();
+            let existingSites = sitesSnap.exists ? (sitesSnap.data().sites || []) : [];
+            const filtered = existingSites.filter(s => s && s.id !== originalId);
+            const restoredSite = {
+                ...(data || {}),
+                id: originalId,
+                isActive: true,
+                restoredAt: nowIso
+            };
+            await sitesRef.set({ sites: [...filtered, restoredSite] }, { merge: true });
+
+            // Restore linked vacancies if present
+            if (metadata && Array.isArray(metadata.linkedVacancies)) {
+                for (const vac of metadata.linkedVacancies) {
+                    if (vac && vac.id) {
+                        await db.collection('vacancies').doc(vac.id).set({
+                            ...vac,
+                            status: 'Open',
+                            isDeleted: false,
+                            restoredAt: nowIso
+                        }, { merge: true }).catch(() => {});
+                    }
+                }
+            }
+            break;
+        }
+
+        case 'STAFF': {
+            const staffRef = db.collection('staff_accounts').doc(originalId);
+            await staffRef.set({
+                ...(data || {}),
+                id: originalId,
+                isDisabled: false,
+                isActive: true,
+                status: 'Active',
+                restoredAt: nowIso
+            }, { merge: true });
+            await computeAndApplyUserClaims(originalId).catch(() => {});
+            break;
+        }
+
+        case 'EMPLOYEE': {
+            const empRef = db.collection('employees').doc(originalId);
+            await empRef.set({
+                ...(data || {}),
+                id: originalId,
+                isActive: true,
+                isDeleted: false,
+                deletedAt: null,
+                restoredAt: nowIso
+            }, { merge: true });
+
+            // Also re-activate onboarding_submissions if present
+            const subRef = db.collection('onboarding_submissions').doc(originalId);
+            const subSnap = await subRef.get();
+            if (subSnap.exists) {
+                await subRef.update({
+                    isActive: true,
+                    isDeleted: false,
+                    deletedAt: null,
+                    restoredAt: nowIso
+                }).catch(() => {});
+            }
+            break;
+        }
+
+        case 'SUBMISSION': {
+            const subRef = db.collection('onboarding_submissions').doc(originalId);
+            await subRef.set({
+                ...(data || {}),
+                id: originalId,
+                status: (data && data.status === 'Archived') ? 'Pending Review' : (data?.status || 'Pending Review'),
+                isDeleted: false,
+                deletedAt: null,
+                restoredAt: nowIso
+            }, { merge: true });
+            break;
+        }
+
+        case 'ROLE': {
+            await db.collection('roles').doc(originalId).set({
+                ...(data || {}),
+                id: originalId,
+                restoredAt: nowIso
+            }, { merge: true });
+            break;
+        }
+
+        case 'VACANCY': {
+            await db.collection('vacancies').doc(originalId).set({
+                ...(data || {}),
+                id: originalId,
+                status: 'Open',
+                isDeleted: false,
+                restoredAt: nowIso
+            }, { merge: true });
+            break;
+        }
+
+        case 'DESIGNATION': {
+            const portalConfigRef = db.collection('settings').doc('portal_config');
+            const pcSnap = await portalConfigRef.get();
+            const designations = pcSnap.exists ? (pcSnap.data().designations || []) : [];
+            const desName = data?.name || originalId;
+            if (!designations.includes(desName)) {
+                designations.push(desName);
+                await portalConfigRef.update({ designations });
+            }
+            break;
+        }
+
+        default: {
+            throw new functions.https.HttpsError('invalid-argument', `Unknown itemType: "${itemType}".`);
+        }
+    }
+
+    // Delete item from Recycle Bin
+    await binSnap.ref.delete();
+
+    // Server Audit Log
+    await db.collection('audit_logs').add({
+        action: 'RESTORE',
+        category: 'RECYCLE_BIN',
+        targetId: originalId,
+        itemType,
+        actorId: request.auth.uid,
+        actorEmail: token.email || 'Admin',
+        details: `Restored ${itemType} "${originalId}" from Recycle Bin.`,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+    }).catch(() => {});
+
+    return {
+        success: true,
+        itemType,
+        originalId,
+        message: `Successfully restored ${itemType} "${originalId}".`
+    };
+});
+
+/**
+ * 3. deleteSiteServer
+ * Server-enforced site deletion with dependency validation (guards, referral invites, pending onboarding).
+ */
+exports.deleteSiteServer = secureOnCall({ timeoutSeconds: 60 }, async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated to delete a site.');
+    }
+    const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
+
+    const { siteId, siteName } = request.data || {};
+    if (!siteId || typeof siteId !== 'string') {
+        throw new functions.https.HttpsError('invalid-argument', 'siteId is required.');
+    }
+
+    const db = admin.firestore();
+    const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'role-super-admin';
+    const permissions = Array.isArray(token.permissions) ? token.permissions : [];
+
+    // Authorization: SuperAdmin or SITES_DELETE / MANAGE_SITES / SITES_MANAGE
+    const hasSitePerm = isSuperAdmin || 
+        permissions.includes('SITES_DELETE') || 
+        permissions.includes('MANAGE_SITES') || 
+        permissions.includes('SITES_MANAGE');
+
+    if (!hasSitePerm) {
+        throw new functions.https.HttpsError('permission-denied', 'Missing permission to delete sites.');
+    }
+
+    // 1. Dependency Check: Active employees assigned to site
+    const [empBySiteId, empByCurrentSiteId] = await Promise.all([
+        db.collection('employees').where('siteId', '==', siteId).get(),
+        db.collection('employees').where('currentSiteId', '==', siteId).get()
+    ]);
+
+    const activeEmployees = new Set();
+    [...empBySiteId.docs, ...empByCurrentSiteId.docs].forEach(d => {
+        const ed = d.data();
+        if (ed.isActive !== false && ed.status !== 'Relieved') {
+            activeEmployees.add(d.id);
+        }
+    });
+
+    if (activeEmployees.size > 0) {
+        throw new functions.https.HttpsError(
+            'failed-precondition',
+            `Cannot delete "${siteName || siteId}". It still has ${activeEmployees.size} active employee(s) assigned.`
+        );
+    }
+
+    // 2. Dependency Check: Active referral invites
+    const inviteSnap = await db.collection('referral_invites')
+        .where('siteId', '==', siteId)
+        .where('status', '==', 'Active')
+        .get();
+
+    if (!inviteSnap.empty) {
+        throw new functions.https.HttpsError(
+            'failed-precondition',
+            `Cannot delete "${siteName || siteId}" because it is linked to ${inviteSnap.size} active referral invite link(s). Revoke these invites first.`
+        );
+    }
+
+    // 3. Dependency Check: Pending onboarding submissions
+    const subSnap = await db.collection('onboarding_submissions')
+        .where('siteId', '==', siteId)
+        .get();
+
+    const pendingSubs = subSnap.docs.filter(d => {
+        const s = d.data().status;
+        return (s === 'Pending' || s === 'Pending Review') && !d.data().deletedAt && !d.data().isDeleted;
+    });
+
+    if (pendingSubs.length > 0) {
+        throw new functions.https.HttpsError(
+            'failed-precondition',
+            `Cannot delete "${siteName || siteId}" because it is linked to ${pendingSubs.length} pending onboarding application(s). Resolve or reject these submissions first.`
+        );
+    }
+
+    // Read site record from settings/sites
+    const sitesRef = db.collection('settings').doc('sites');
+    const sitesSnap = await sitesRef.get();
+    const siteList = sitesSnap.exists ? (sitesSnap.data().sites || []) : [];
+    const targetSite = siteList.find(s => s && s.id === siteId);
+
+    if (!targetSite) {
+        throw new functions.https.HttpsError('not-found', `Site "${siteId}" not found in settings.`);
+    }
+
+    const resolvedSiteName = targetSite.name || siteName || siteId;
+
+    // Archive any linked vacancies
+    const vacSnap = await db.collection('vacancies').where('siteId', '==', siteId).get();
+    const linkedVacancies = [];
+    const batch = db.batch();
+
+    vacSnap.docs.forEach(docSnap => {
+        const vd = docSnap.data();
+        linkedVacancies.push({ id: docSnap.id, ...vd });
+        batch.update(docSnap.ref, {
+            status: 'Closed',
+            isDeleted: true,
+            closedReason: `Site ${resolvedSiteName} deleted`,
+            deletedAt: new Date().toISOString()
+        });
+    });
+
+    // Remove site from settings/sites
+    const updatedSites = siteList.filter(s => s && s.id !== siteId);
+    batch.update(sitesRef, { sites: updatedSites });
+
+    // Move to Recycle Bin
+    const binRef = db.collection('recycle_bin').doc();
+    batch.set(binRef, {
+        itemType: 'SITE',
+        originalId: siteId,
+        title: resolvedSiteName,
+        subtitle: `${targetSite.city || ''}, ${targetSite.state || ''}`.trim().replace(/^,\s*|,\s*$/g, ''),
+        data: targetSite,
+        metadata: {
+            linkedVacancies
+        },
+        deletedAt: new Date().toISOString(),
+        deletedBy: request.auth.uid,
+        deletedByEmail: token.email || 'Admin',
+        autoPurgeAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+    });
+
+    // Server Audit Log
+    const auditRef = db.collection('audit_logs').doc();
+    batch.set(auditRef, {
+        action: 'DELETE',
+        category: 'SITES',
+        targetId: siteId,
+        targetName: resolvedSiteName,
+        actorId: request.auth.uid,
+        actorEmail: token.email || 'Admin',
+        details: `Deleted site "${resolvedSiteName}" and archived ${linkedVacancies.length} linked vacancy(ies) to Recycle Bin.`,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await batch.commit();
+
+    return {
+        success: true,
+        siteId,
+        siteName: resolvedSiteName,
+        message: `Site "${resolvedSiteName}" moved to Recycle Bin.`
+    };
+});
+
+/**
+ * 4. promoteEmployeeServer
+ * Server-enforced employee designation promotion with site verification and official reference tracking.
+ */
+exports.promoteEmployeeServer = secureOnCall({ timeoutSeconds: 60 }, async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated to promote an employee.');
+    }
+    const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
+
+    const { employeeId, newDesignation, effectiveDate, newSiteId, newSiteName, referenceNo, remarks, promotedBy } = request.data || {};
+    if (!employeeId || typeof employeeId !== 'string') {
+        throw new functions.https.HttpsError('invalid-argument', 'employeeId is required.');
+    }
+    if (!newDesignation || typeof newDesignation !== 'string' || !newDesignation.trim()) {
+        throw new functions.https.HttpsError('invalid-argument', 'newDesignation is required.');
+    }
+
+    const db = admin.firestore();
+    const uid = request.auth.uid;
+    const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'role-super-admin';
+    const permissions = Array.isArray(token.permissions) ? token.permissions : [];
+
+    // Authorization check
+    const hasPerm = isSuperAdmin ||
+        permissions.includes('EMPLOYEES_MANAGE_DEPLOYMENTS') ||
+        permissions.includes('SUBMISSIONS_APPROVE');
+
+    if (!hasPerm) {
+        throw new functions.https.HttpsError('permission-denied', 'Missing permission to promote employees.');
+    }
+
+    const empSnap = await resolveEmployeeDocAdmin(db, employeeId);
+    if (!empSnap || !empSnap.exists) {
+        throw new functions.https.HttpsError('not-found', `Employee "${employeeId}" not found.`);
+    }
+
+    const empData = empSnap.data();
+    const currentSiteId = empData.currentSiteId || '';
+
+    // Multi-tenant Site scope check
+    if (!isSuperAdmin) {
+        const hasGlobalScope = permissions.includes('EMPLOYEES_VIEW_SCOPE_ALL') ||
+            permissions.includes('SUBMISSIONS_VIEW_SCOPE_ALL') ||
+            permissions.includes('MANAGE_SITES') ||
+            permissions.includes('MANAGE_ALL_SITES');
+        const sitesManaged = Array.isArray(token.sitesManaged) ? token.sitesManaged : [];
+
+        if (!hasGlobalScope) {
+            if (currentSiteId && !sitesManaged.includes(currentSiteId)) {
+                throw new functions.https.HttpsError('permission-denied', `You do not have management authority for site "${currentSiteId}".`);
+            }
+            if (newSiteId && !sitesManaged.includes(newSiteId)) {
+                throw new functions.https.HttpsError('permission-denied', `You do not have management authority for target transfer site "${newSiteId}".`);
+            }
+        }
+    }
+
+    const currentDesignation = empData.designation || empData.profileData?.designation || 'Staff';
+    const applicantName = empData.applicantName || empData.employeeName || 'Employee';
+    const cleanEffectiveDate = effectiveDate || new Date().toISOString().split('T')[0];
+    const year = new Date().getFullYear();
+    const randCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+    const cleanRefNo = (referenceNo && referenceNo.trim()) ? referenceNo.trim() : `UDF/PRM/${year}/${randCode}`;
+
+    const promotionRecord = {
+        id: `prm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        fromDesignation: currentDesignation,
+        toDesignation: newDesignation.trim(),
+        effectiveDate: cleanEffectiveDate,
+        siteId: newSiteId || currentSiteId || null,
+        siteName: newSiteName || empData.siteName || null,
+        referenceNo: cleanRefNo,
+        remarks: remarks || '',
+        promotedAt: new Date().toISOString(),
+        promotedBy: promotedBy || token.name || token.email || 'Admin'
+    };
+
+    const updates = {
+        designation: newDesignation.trim(),
+        'profileData.designation': newDesignation.trim(),
+        promotionHistory: admin.firestore.FieldValue.arrayUnion(promotionRecord),
+        lastPromotionDate: cleanEffectiveDate,
+        lastUpdated: new Date().toISOString()
+    };
+
+    if (newSiteId) {
+        updates.currentSiteId = newSiteId;
+        if (newSiteName) updates.siteName = newSiteName;
+    }
+
+    if (Array.isArray(empData.activeAssignments) && empData.activeAssignments.length > 0) {
+        updates.activeAssignments = empData.activeAssignments.map(a => {
+            if (a.type === 'PRIMARY') {
+                return {
+                    ...a,
+                    designation: newDesignation.trim(),
+                    ...(newSiteId ? { siteId: newSiteId } : {})
+                };
+            }
+            return a;
+        });
+    }
+
+    const batch = db.batch();
+    batch.update(empSnap.ref, updates);
+
+    // Send notification to employee
+    const targetUid = empData.uid || empSnap.id;
+    const notifRef = db.collection('notifications').doc();
+    batch.set(notifRef, {
+        title: 'Promotion Confirmed',
+        message: `Congratulations! You have been promoted to ${newDesignation.trim()} (Ref: ${cleanRefNo}).`,
+        targetUserId: targetUid,
+        type: 'PROMOTION',
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Server Audit Log
+    const auditRef = db.collection('audit_logs').doc();
+    batch.set(auditRef, {
+        action: 'PROMOTION',
+        category: 'EMPLOYEES',
+        targetId: employeeId,
+        targetName: applicantName,
+        actorId: uid,
+        actorEmail: token.email || 'Admin',
+        details: `Promoted ${applicantName} (${employeeId}) from "${currentDesignation}" to "${newDesignation.trim()}" (Ref: ${cleanRefNo}).`,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await batch.commit();
+
+    return {
+        success: true,
+        promotionRecord
+    };
+});
+
+/**
+ * 5. bulkImportEmployeesServer
+ * Server-enforced batch import of employee records from validated spreadsheet data.
+ */
+exports.bulkImportEmployeesServer = secureOnCall({ timeoutSeconds: 300, memory: '1GiB' }, async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Must be authenticated to bulk import employees.');
+    }
+    const token = request.auth.token || {};
+    if (token.isDisabled === true) {
+        throw new functions.https.HttpsError('permission-denied', 'Account is disabled.');
+    }
+
+    const { rows, options } = request.data || {};
+    if (!Array.isArray(rows) || rows.length === 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'rows array is required and must not be empty.');
+    }
+    if (rows.length > 2000) {
+        throw new functions.https.HttpsError('invalid-argument', 'Maximum 2,000 rows can be imported per batch.');
+    }
+
+    const db = admin.firestore();
+    const isSuperAdmin = token.isSuperAdmin === true || token.roleId === 'role-super-admin';
+    const permissions = Array.isArray(token.permissions) ? token.permissions : [];
+
+    if (!isSuperAdmin && !permissions.includes('EMPLOYEES_IMPORT')) {
+        throw new functions.https.HttpsError('permission-denied', 'Missing permission EMPLOYEES_IMPORT.');
+    }
+
+    const { generateIds = true, overwriteMode = 'skip', idPrefix = 'HY' } = options || {};
+
+    const sitesSnap = await db.collection('settings').doc('sites').get();
+    const siteList = sitesSnap.exists ? (sitesSnap.data().sites || []) : [];
+
+    let successfulImports = 0;
+    let failedImports = 0;
+    const errors = [];
+    const warnings = [];
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+
+    // Process in batches of 400
+    const CHUNK_SIZE = 400;
+    for (let c = 0; c < rows.length; c += CHUNK_SIZE) {
+        const chunk = rows.slice(c, c + CHUNK_SIZE);
+        const batch = db.batch();
+        let batchOps = 0;
+
+        for (let i = 0; i < chunk.length; i++) {
+            const rowNum = c + i + 1;
+            const row = chunk[i];
+
+            try {
+                if (!row.fullName || typeof row.fullName !== 'string') {
+                    errors.push({ row: rowNum, error: 'Missing required field: Full Name' });
+                    failedImports++;
+                    continue;
+                }
+
+                // Resolve site
+                const loc = (row.location || '').trim();
+                const matchedSite = siteList.find(s => s && (
+                    (s.name && s.name.toLowerCase() === loc.toLowerCase()) ||
+                    (s.code && s.code.toLowerCase() === loc.toLowerCase()) ||
+                    (s.id && s.id.toLowerCase() === loc.toLowerCase())
+                ));
+
+                const siteId = matchedSite?.id || '';
+                const siteName = matchedSite?.name || loc;
+
+                // Resolve Employee ID
+                let empId = (row.employeeId || '').trim();
+                if (!empId && generateIds) {
+                    const randDigits = Math.floor(100000 + Math.random() * 900000);
+                    empId = `${idPrefix}${randDigits}`;
+                }
+                if (!empId) {
+                    empId = `EMP${Date.now()}${i}`;
+                }
+
+                // High entropy submission ID
+                const randBuf = new Uint32Array(2);
+                require('crypto').getRandomValues(randBuf);
+                const baseToken = (randBuf[0].toString(36) + randBuf[1].toString(36)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase();
+                const submissionId = `UDF-${year}${month}-${baseToken}`;
+
+                // Default password hash
+                const rawDob = row.dateOfBirth ? String(row.dateOfBirth).replace(/[^0-9]/g, '') : '01011990';
+                const rawPhone = row.phoneNumber ? String(row.phoneNumber).slice(-4) : '1234';
+                const defaultPassword = `${row.fullName.split(' ')[0]}@${rawPhone || rawDob.slice(0, 4)}`;
+                const passwordHash = await hashPassword(defaultPassword);
+
+                const employeeRecord = {
+                    applicantName: row.fullName.trim(),
+                    employeeId: empId,
+                    portalId: submissionId,
+                    currentSiteId: siteId,
+                    siteName: siteName,
+                    designation: (row.designation || 'Security Guard').trim(),
+                    phoneNumber: row.phoneNumber || '',
+                    dateOfBirth: row.dateOfBirth || '',
+                    joiningDate: row.joiningDate || nowIso.split('T')[0],
+                    isActive: true,
+                    isRelieved: false,
+                    profileStatus: 'active',
+                    passwordHash,
+                    isDefaultPassword: true,
+                    importedAt: nowIso,
+                    importedBy: request.auth.uid,
+                    profileData: {
+                        applicantName: row.fullName.trim(),
+                        phoneNumber: row.phoneNumber || '',
+                        designation: (row.designation || 'Security Guard').trim(),
+                        ...(row.formData || {})
+                    }
+                };
+
+                const empRef = db.collection('employees').doc(empId);
+                const subRef = db.collection('onboarding_submissions').doc(submissionId);
+
+                batch.set(empRef, employeeRecord, { merge: overwriteMode === 'overwrite' });
+                batch.set(subRef, {
+                    ...employeeRecord,
+                    status: 'Approved',
+                    submissionDate: nowIso,
+                    approvedAt: nowIso,
+                    approvedBy: token.name || 'Bulk Import'
+                }, { merge: overwriteMode === 'overwrite' });
+
+                batchOps += 2;
+                successfulImports++;
+            } catch (rowErr) {
+                errors.push({ row: rowNum, error: rowErr.message });
+                failedImports++;
+            }
+        }
+
+        if (batchOps > 0) {
+            await batch.commit();
+        }
+    }
+
+    // Server Audit Log
+    await db.collection('audit_logs').add({
+        action: 'BULK_IMPORT',
+        category: 'EMPLOYEES',
+        actorId: request.auth.uid,
+        actorEmail: token.email || 'Admin',
+        details: `Bulk imported ${successfulImports} employee(s) with ${failedImports} error(s).`,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+    }).catch(() => {});
+
+    return {
+        success: true,
+        totalRows: rows.length,
+        successfulImports,
+        failedImports,
+        errors,
+        warnings
+    };
+});
+
