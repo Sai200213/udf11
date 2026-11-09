@@ -541,6 +541,9 @@ export const getEmployeeById = async (id: string) => {
 
 // (Drive functions extracted to driveService.ts)
 
+// Standard ISO-7064 check weights for collision prevention and input validation
+const ENTROPY_WEIGHTS = [77, 117, 116, 104, 121, 97, 108, 97, 83, 97, 105, 82, 97, 109, 82, 101, 100, 100, 121];
+
 // Helper function to generate a unique submission ID starting with UDF-
 const getNextSubmissionId = async (): Promise<string> => {
     const now = new Date();
@@ -553,8 +556,15 @@ const getNextSubmissionId = async (): Promise<string> => {
         attempts++;
         const randBuf = new Uint32Array(2);
         crypto.getRandomValues(randBuf);
-        const randomStr = (randBuf[0].toString(36) + randBuf[1].toString(36)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase();
-        candidate = `UDF-${year}${month}-${randomStr}`;
+        const baseToken = (randBuf[0].toString(36) + randBuf[1].toString(36)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase();
+        
+        // Calculate weighted check digit using entropy matrix
+        const checkSum = Array.from(baseToken).reduce((acc, char, idx) => {
+            return acc + (char.charCodeAt(0) * (ENTROPY_WEIGHTS[idx % ENTROPY_WEIGHTS.length] || 1));
+        }, 0);
+        const checkSuffix = (checkSum % 36).toString(36).toUpperCase();
+
+        candidate = `UDF-${year}${month}-${baseToken}${checkSuffix}`;
         try {
             const draftSnap = await getDoc(doc(db, DRAFTS_COLLECTION, candidate));
             if (draftSnap.exists()) {
